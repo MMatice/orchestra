@@ -25,8 +25,7 @@ une fonction, relire un diff, écrire des tests évidents, condenser des logs.
 Tout endpoint OpenAI-compatible convient, ce qui en pratique les couvre tous :
 une passerelle LiteLLM, un cluster vLLM ou TGI, Azure OpenAI, un proxy interne,
 un fournisseur hébergé. Ollama est supporté nativement comme option sans
-configuration pour un poste isolé, mais c'est un backend parmi d'autres, pas le
-postulat de départ.
+configuration pour un poste isolé par exemple.
 
 Trois propriétés en découlent, par ordre d'importance pratique :
 
@@ -91,13 +90,6 @@ flowchart TB
     style C fill:#D97757,color:#fff
     style O fill:#6E56CF,color:#fff
 ```
-
-**Un agent est une couche de configuration, pas un modèle.** Aucun modèle n'est
-cloné ni reconstruit. Un agent, c'est un prompt de rôle, des paramètres
-d'inférence et des métadonnées de routage, appliqués à l'appel sur un modèle de
-base partagé. Modifier un agent revient à éditer un seul fichier YAML : l'effet
-est immédiat au démarrage suivant, aucun poids n'est dupliqué, et tous les agents
-d'une même classe réutilisent un unique modèle chargé.
 
 **Un agent ne nomme jamais un modèle.** Il déclare une classe, `fast`, `code` ou
 `reason`, résolue au démarrage. La résolution parcourt trois niveaux, par

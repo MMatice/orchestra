@@ -25,7 +25,7 @@ explaining a function, reviewing a diff, writing obvious tests, condensing logs.
 Any OpenAI-compatible endpoint works, which in practice means all of them: a
 LiteLLM gateway, a vLLM or TGI cluster, Azure OpenAI, an internal proxy, a
 hosted provider. Ollama is supported natively as the zero-configuration option
-for a single workstation, but it is one backend among others, not the premise.
+for a single workstation for example.
 
 Three properties follow, in order of practical weight:
 
@@ -90,12 +90,6 @@ flowchart TB
     style C fill:#D97757,color:#fff
     style O fill:#6E56CF,color:#fff
 ```
-
-**An agent is a configuration layer, not a model.** No model is ever cloned or
-rebuilt. An agent is a role prompt, inference parameters and routing metadata,
-applied at call time on top of a shared base model. Editing an agent means
-editing one YAML file: the change takes effect on the next start, no weights are
-duplicated, and every agent of the same class reuses a single loaded model.
 
 **An agent never names a model.** It declares a class, `fast`, `code` or
 `reason`, and the class is resolved at startup. Resolution walks three levels, in
