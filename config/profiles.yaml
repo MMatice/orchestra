@@ -3,75 +3,90 @@
 # Un agent ne nomme jamais un modele : il declare une CLASSE de modele
 # (fast / code / reason). Ce fichier fait la traduction classe -> modele reel
 # en fonction de la memoire disponible. Le meme dossier agents/ tourne donc
-# sur un laptop 8 Go comme sur un serveur 48 Go, sans rien modifier.
+# sur un laptop sans GPU comme sur un serveur 80 Go, sans rien modifier.
 #
 # Selection : on prend le profil de plus grand `min_usable_gb` inferieur ou
 # egal au budget memoire detecte. Forcable via ORCHESTRA_PROFILE=<id>.
 #
 # Classes :
-#   fast   -> triage, classification, routage. Doit repondre en < 2 s.
+#   fast   -> triage, classification, resume. Doit repondre en quelques secondes.
 #   code   -> implementation, review, tests. Modele specialise code.
 #   reason -> explication, documentation, architecture. Modele generaliste.
+#
+# CONTRAINTE SUR num_ctx : la valeur s'applique aux trois classes, elle ne doit
+# donc jamais depasser la plus petite fenetre de contexte des trois modeles.
+# Les fenetres different beaucoup d'un modele a l'autre : qwen2.5-coder plafonne
+# a 32K, la serie qwen3 dense a 40K, tandis que qwen3:4b, qwen3:30b et
+# qwen3-coder:30b montent a 256K. C'est pourquoi les profils lg et au-dela
+# n'utilisent que des modeles a large fenetre.
+#
+# Tailles indiquees : poids quantifies Q4 tels que publies sur ollama.com.
 
 profiles:
   cpu:
     label: "CPU seul"
     min_usable_gb: 0
     num_ctx: 4096
-    parallel_agents: 1
     models:
-      fast: "qwen2.5-coder:1.5b"
-      code: "qwen2.5-coder:3b"
-      reason: "llama3.2:3b"
+      fast: "qwen3:0.6b"              # 523 Mo
+      code: "qwen2.5-coder:1.5b"      # 986 Mo
+      reason: "qwen3:1.7b"            # 1.4 Go
 
   xs:
     label: "GPU d'entree (4-6 Go)"
     min_usable_gb: 3.5
-    num_ctx: 4096
-    parallel_agents: 1
+    num_ctx: 8192
     models:
-      fast: "qwen2.5-coder:1.5b"
-      code: "qwen2.5-coder:7b"
-      reason: "hermes3:3b"
+      fast: "qwen3:0.6b"              # 523 Mo
+      code: "qwen2.5-coder:3b"        # 1.9 Go
+      reason: "qwen3:4b"              # 2.5 Go
 
   sm:
     label: "GPU grand public (8-11 Go)"
     min_usable_gb: 6.5
     num_ctx: 8192
-    parallel_agents: 1
     models:
-      fast: "qwen2.5-coder:1.5b"
-      code: "qwen2.5-coder:7b"
-      reason: "hermes3:8b"
+      fast: "qwen3:1.7b"              # 1.4 Go
+      code: "qwen2.5-coder:7b"        # 4.7 Go
+      reason: "qwen3:8b"              # 5.2 Go
 
   md:
     label: "GPU haut de gamme (12-20 Go)"
     min_usable_gb: 11.0
     num_ctx: 16384
-    parallel_agents: 2
     models:
-      fast: "qwen2.5-coder:3b"
-      code: "qwen2.5-coder:14b"
-      reason: "hermes3:8b"
+      fast: "qwen3:1.7b"              # 1.4 Go
+      code: "qwen2.5-coder:14b"       # 9.0 Go
+      reason: "qwen3:14b"             # 9.3 Go
 
   lg:
     label: "Station de travail / GPU pro (24-40 Go)"
     min_usable_gb: 21.0
     num_ctx: 32768
-    parallel_agents: 3
     models:
-      fast: "qwen2.5-coder:3b"
-      code: "qwen2.5-coder:32b"
-      reason: "qwen2.5:32b"
+      fast: "qwen3:4b"                # 2.5 Go
+      code: "qwen3-coder:30b"         # 19 Go, MoE 30B-A3B
+      reason: "qwen3:30b"             # 19 Go, MoE 30B-A3B
 
   xl:
-    label: "Serveur d'inference (48 Go et plus)"
+    label: "Serveur d'inference (48-79 Go)"
     # 48 Go de VRAM brute donnent ~43 Go de budget apres marge : le seuil est
-    # cale juste en dessous pour qu'un bi-GPU 2x24 Go bascule bien ici.
+    # cale en dessous pour qu'un bi-GPU 2x24 Go bascule bien ici.
     min_usable_gb: 42.0
-    num_ctx: 65536
-    parallel_agents: 6
+    # Memes modeles qu'en lg, mais la memoire disponible permet de les garder
+    # residents simultanement et d'allouer un cache KV bien plus large : c'est
+    # le contexte qui change, pas la taille des poids.
+    num_ctx: 131072
     models:
-      fast: "qwen2.5-coder:7b"
-      code: "qwen2.5-coder:32b"
-      reason: "hermes3:70b"
+      fast: "qwen3:4b"                # 2.5 Go
+      code: "qwen3-coder:30b"         # 19 Go
+      reason: "qwen3:30b"             # 19 Go
+
+  xxl:
+    label: "GPU datacenter (80 Go et plus)"
+    min_usable_gb: 70.0
+    num_ctx: 131072
+    models:
+      fast: "qwen3:4b"                # 2.5 Go
+      code: "qwen3-coder:30b"         # 19 Go
+      reason: "gpt-oss:120b"          # 65 Go, MXFP4

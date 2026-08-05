@@ -8,7 +8,6 @@ PROFILE = Profile(
     label="test",
     min_usable_gb=0,
     num_ctx=8192,
-    parallel_agents=1,
     models={"fast": "small:1b", "code": "coder:7b", "reason": "general:8b"},
 )
 

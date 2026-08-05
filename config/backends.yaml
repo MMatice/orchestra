@@ -1,11 +1,12 @@
-# Backends d'inference.
+# Endpoints d'inference.
 #
 # Orchestra parle deux protocoles :
-#   type: ollama  -> API native Ollama (/api/chat), pour l'inference locale
-#   type: openai  -> /v1/chat/completions, pour tout le reste
+#   type: openai  -> /v1/chat/completions, la cible normale
+#   type: ollama  -> API native Ollama, pour un poste isole
 #
-# Le second couvre LiteLLM, vLLM, TGI, LM Studio, llama.cpp server, OpenRouter,
-# Groq, Together, Azure OpenAI et la plupart des passerelles internes.
+# Le premier couvre LiteLLM, vLLM, TGI, Azure OpenAI, les proxies internes,
+# LM Studio, llama.cpp, OpenRouter, Groq, Together : tous exposent le meme
+# contrat. Ollama n'est la que parce qu'il ne demande aucune configuration.
 #
 # Selection : ORCHESTRA_BACKEND=<nom>, sinon la valeur de `default` ci-dessous.
 # Repointage sans edition : ORCHESTRA_BASE_URL=<url>.
@@ -15,15 +16,99 @@
 # chaque appel et n'est jamais journalisee.
 #
 # Cle `models` : surcharge la resolution classe -> modele du profil materiel.
-# Indispensable des que le backend est distant - la capacite d'une passerelle
-# n'a aucun rapport avec celle du poste de travail. Sans cette cle, c'est le
-# profil detecte localement qui s'applique.
+# Indispensable des que le backend est distant, car la capacite d'un endpoint
+# n'a aucun rapport avec celle du poste qui l'appelle. Les noms doivent
+# correspondre a ce que l'endpoint publie : verifiez avec `cli backends` puis
+# `cli status`, qui liste le catalogue quand l'endpoint le expose.
+#
+# `default` reste sur ollama : c'est le seul backend qui fonctionne sans
+# configuration prealable. En equipe, basculez-le sur votre passerelle.
 
 default: ollama
 
 backends:
-  # --- Local ----------------------------------------------------------------
+  # --- Passerelles d'entreprise --------------------------------------------
 
+  # LiteLLM en mode proxy : point d'entree unique qui centralise routage,
+  # quotas par equipe, rotation des cles et journalisation d'audit.
+  #   litellm --config litellm.config.yaml --port 4000
+  litellm:
+    type: openai
+    base_url: http://litellm.interne:4000/v1
+    api_key_env: LITELLM_API_KEY
+    num_ctx: 32768
+    models:
+      fast: qwen3-1.7b
+      code: qwen3-coder-30b
+      reason: qwen3-30b
+
+  # Serveur vLLM dedie, haut debit. Les noms sont ceux du depot Hugging Face
+  # servi par le deploiement.
+  vllm:
+    type: openai
+    base_url: http://vllm.interne:8000/v1
+    api_key_env: VLLM_API_KEY
+    num_ctx: 32768
+    models:
+      fast: Qwen/Qwen3-1.7B
+      code: Qwen/Qwen3-Coder-30B-A3B-Instruct
+      reason: Qwen/Qwen3-30B-A3B-Instruct-2507
+
+  # Text Generation Inference (Hugging Face). Un deploiement TGI ne sert
+  # generalement qu'un modele : la table `models` est alors inutile, les trois
+  # classes tombant sur le meme endpoint.
+  tgi:
+    type: openai
+    base_url: http://tgi.interne:8080/v1
+    api_key_env: TGI_API_KEY
+    num_ctx: 32768
+
+  # Azure OpenAI ou tout proxy interne exposant le contrat OpenAI. Les noms de
+  # modeles sont ceux de vos deploiements, pas ceux du fournisseur.
+  azure:
+    type: openai
+    base_url: https://votre-ressource.openai.azure.com/openai/v1
+    api_key_env: AZURE_OPENAI_API_KEY
+    num_ctx: 32768
+
+  # --- Fournisseurs heberges ------------------------------------------------
+  # Utiles pour absorber un pic sans dimensionner le parc pour le pire cas.
+  # Attention : le code sort du reseau, ce qui annule l'argument souverainete.
+
+  openrouter:
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    num_ctx: 32768
+    models:
+      fast: qwen/qwen3-8b
+      code: qwen/qwen3-coder
+      reason: qwen/qwen3-30b-a3b
+
+  groq:
+    type: openai
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+    num_ctx: 32768
+    models:
+      fast: llama-3.1-8b-instant
+      code: qwen/qwen3-32b
+      reason: llama-3.3-70b-versatile
+
+  together:
+    type: openai
+    base_url: https://api.together.xyz/v1
+    api_key_env: TOGETHER_API_KEY
+    num_ctx: 32768
+    models:
+      fast: Qwen/Qwen3-1.7B
+      code: Qwen/Qwen3-Coder-480B-A35B-Instruct
+      reason: Qwen/Qwen3-235B-A22B-Instruct-2507
+
+  # --- Postes de travail ----------------------------------------------------
+
+  # Sans table `models` : la resolution retombe sur le profil materiel detecte,
+  # ce qui est exactement le comportement voulu en local.
   ollama:
     type: ollama
     base_url: http://127.0.0.1:11434
@@ -35,66 +120,3 @@ backends:
   llamacpp:
     type: openai
     base_url: http://127.0.0.1:8080/v1
-
-  # --- Passerelle d'entreprise ---------------------------------------------
-
-  # LiteLLM en mode proxy : point d'entree unique qui centralise routage,
-  # quotas par equipe, rotation des cles et journalisation.
-  #   litellm --config litellm.config.yaml --port 4000
-  litellm:
-    type: openai
-    base_url: http://litellm.interne:4000/v1
-    api_key_env: LITELLM_API_KEY
-    num_ctx: 32768
-    models:
-      fast: qwen2.5-coder-1.5b
-      code: qwen2.5-coder-32b
-      reason: qwen2.5-72b
-
-  # Serveur vLLM dedie, un modele par deploiement.
-  vllm:
-    type: openai
-    base_url: http://vllm.interne:8000/v1
-    api_key_env: VLLM_API_KEY
-    num_ctx: 32768
-    models:
-      fast: Qwen/Qwen2.5-Coder-1.5B-Instruct
-      code: Qwen/Qwen2.5-Coder-32B-Instruct
-      reason: Qwen/Qwen2.5-72B-Instruct
-
-  # Text Generation Inference (Hugging Face).
-  tgi:
-    type: openai
-    base_url: http://tgi.interne:8080/v1
-    api_key_env: TGI_API_KEY
-
-  # --- Fournisseurs heberges ------------------------------------------------
-  # Utile pour absorber un pic sans dimensionner le parc GPU pour le pire cas.
-  # Attention : le code sort du reseau, ce qui annule l'argument souverainete.
-
-  openrouter:
-    type: openai
-    base_url: https://openrouter.ai/api/v1
-    api_key_env: OPENROUTER_API_KEY
-    models:
-      fast: qwen/qwen-2.5-coder-7b-instruct
-      code: qwen/qwen-2.5-coder-32b-instruct
-      reason: qwen/qwen-2.5-72b-instruct
-
-  groq:
-    type: openai
-    base_url: https://api.groq.com/openai/v1
-    api_key_env: GROQ_API_KEY
-    models:
-      fast: llama-3.1-8b-instant
-      code: qwen-2.5-coder-32b
-      reason: llama-3.3-70b-versatile
-
-  together:
-    type: openai
-    base_url: https://api.together.xyz/v1
-    api_key_env: TOGETHER_API_KEY
-    models:
-      fast: Qwen/Qwen2.5-Coder-7B-Instruct
-      code: Qwen/Qwen2.5-Coder-32B-Instruct
-      reason: Qwen/Qwen2.5-72B-Instruct

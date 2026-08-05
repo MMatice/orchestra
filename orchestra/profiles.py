@@ -26,7 +26,6 @@ class Profile:
     label: str
     min_usable_gb: float
     num_ctx: int
-    parallel_agents: int
     models: dict[str, str]
 
     def model_for(self, model_class: str) -> str:
@@ -63,7 +62,6 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             label=str(data.get("label", pid)),
             min_usable_gb=float(data.get("min_usable_gb", 0)),
             num_ctx=int(data.get("num_ctx", 8192)),
-            parallel_agents=int(data.get("parallel_agents", 1)),
             models={k: str(v) for k, v in models.items()},
         )
     return profiles

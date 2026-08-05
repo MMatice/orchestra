@@ -2,12 +2,12 @@
 
 # Orchestra
 
-**Déléguez les tâches routinières de Claude Code à des agents LLM locaux.**
+**Déléguez les tâches routinières de Claude Code à votre propre infrastructure d'inférence.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)](https://modelcontextprotocol.io/)
-[![Backends](https://img.shields.io/badge/backends-Ollama%20%7C%20OpenAI--compatible-000000)](#backends)
-[![Tests](https://img.shields.io/badge/tests-52%20passed-3FB950)](#tests)
+[![Infrastructure](https://img.shields.io/badge/infrastructure-tout%20endpoint%20OpenAI--compatible-2088FF)](#infrastructure)
+[![Tests](https://img.shields.io/badge/tests-54%20passed-3FB950)](#tests)
 [![License](https://img.shields.io/badge/license-MIT-3FB950)](LICENSE)
 
 [English](README.md) · **Français**
@@ -16,37 +16,42 @@
 
 ---
 
-Orchestra expose un banc d'agents locaux spécialisés comme outils MCP. Claude
-reste l'orchestrateur : il garde la vision d'ensemble, décide quoi déléguer et à
-qui, et vérifie ce qui revient. Le travail mécanique descend d'un étage :
-expliquer une fonction, relire un diff, écrire des tests évidents, condenser des
-logs.
+Orchestra expose un banc d'agents spécialisés comme outils MCP, exécutés sur
+**l'infrastructure d'inférence dont vous disposez déjà**. Claude reste
+l'orchestrateur : il garde la vision d'ensemble, décide quoi déléguer et à qui,
+et vérifie ce qui revient. Le travail mécanique descend d'un étage : expliquer
+une fonction, relire un diff, écrire des tests évidents, condenser des logs.
+
+Tout endpoint OpenAI-compatible convient, ce qui en pratique les couvre tous :
+une passerelle LiteLLM, un cluster vLLM ou TGI, Azure OpenAI, un proxy interne,
+un fournisseur hébergé. Ollama est supporté nativement comme option sans
+configuration pour un poste isolé, mais c'est un backend parmi d'autres, pas le
+postulat de départ.
 
 Trois propriétés en découlent, par ordre d'importance pratique :
 
 | | |
 |---|---|
-| 🔒 **Souveraineté** | Le code ne quitte jamais le réseau. Décisif sous NDA, ou en secteur réglementé. |
-| 💰 **Coût** | Les tâches routinières passent à coût marginal une fois le matériel amorti. |
-| ⚡ **Latence** | Pas d'aller-retour réseau sur les micro-tâches : triage, résumé. |
+| 🔒 **Souveraineté** | Avec une inférence auto-hébergée, le code ne quitte jamais votre réseau. Décisif sous NDA, ou en secteur réglementé. |
+| 💰 **Coût** | Les tâches routinières quittent la facturation au token pour une capacité déjà payée. |
+| ⚡ **Latence** | Pas d'aller-retour externe sur les micro-tâches : triage, résumé. |
 
 > [!NOTE]
-> Orchestra ne remplace pas Claude. Les modèles locaux 7-8B décrochent nettement
-> sur le raisonnement multi-fichiers et l'implémentation complexe. Le gain vient
-> de la répartition, pas de la substitution.
+> Orchestra ne remplace pas Claude. Les petits modèles décrochent nettement sur
+> le raisonnement multi-fichiers et l'implémentation complexe. Le gain vient de
+> la répartition, pas de la substitution.
 
 ---
 
 ## Sommaire
 
 - [Comment ça marche](#comment-ça-marche)
-- [Backends](#backends)
-- [Prérequis](#prérequis)
+- [Infrastructure](#infrastructure)
 - [Installation](#installation)
 - [Utilisation depuis Claude Code](#utilisation-depuis-claude-code)
 - [Ligne de commande](#ligne-de-commande)
 - [Configuration](#configuration)
-- [Adapter à une autre infrastructure](#adapter-à-une-autre-infrastructure)
+- [Schémas de déploiement](#schémas-de-déploiement)
 - [Structure du projet](#structure-du-projet)
 - [Tests](#tests)
 - [Limites](#limites)
@@ -78,8 +83,10 @@ flowchart TB
 
     A --> P[Résolution du modèle]
     P --> B{Backend}
-    B --> B1[(Ollama)]
-    B --> B2[(OpenAI-compatible)]
+    B --> B1[(Passerelle LiteLLM)]
+    B --> B2[(Cluster vLLM / TGI)]
+    B --> B3[(Azure / hébergé)]
+    B --> B4[(Ollama, local)]
 
     style C fill:#D97757,color:#fff
     style O fill:#6E56CF,color:#fff
@@ -95,13 +102,14 @@ d'une même classe réutilisent un unique modèle chargé.
 **Un agent ne nomme jamais un modèle.** Il déclare une classe, `fast`, `code` ou
 `reason`, résolue au démarrage. La résolution parcourt trois niveaux, par
 priorité décroissante : un `pinned_model` explicite sur l'agent, puis la table de
-modèles du backend actif, puis le profil matériel détecté sur la machine. La
-détection locale mesure la mémoire exploitable, somme la VRAM en multi-GPU et
-retombe sur la RAM en l'absence de GPU. Une passerelle distante publie ses
-propres noms de modèles et sa propre capacité : dès qu'un backend déclare une
-table de modèles, elle l'emporte et la détection locale cesse d'être pertinente.
-Le même dossier `agents/` tourne donc sans modification d'un laptop sans GPU à un
-serveur bi-GPU ou une passerelle mutualisée.
+modèles du backend actif, puis un profil matériel détecté sur la machine. C'est
+cette table de modèles qui rend le système agnostique à l'infrastructure : une
+passerelle publie ses propres noms de modèles et sa propre capacité, donc dès
+qu'un backend en déclare une, elle l'emporte et la détection matérielle locale
+cesse de s'appliquer. La détection ne concerne qu'un backend local, où elle
+mesure la mémoire exploitable, somme la VRAM en multi-GPU et retombe sur la RAM
+en l'absence de GPU. Le même dossier `agents/` tourne donc sans modification
+contre un laptop, un cluster mutualisé ou une passerelle d'entreprise.
 
 **Le routage est déterministe d'abord, LLM ensuite.** Un score sur le type de
 tâche déclaré et les mots-clés tranche la majorité des demandes pour zéro token.
@@ -115,77 +123,112 @@ contraint en JSON, et un nom d'agent halluciné est rejeté plutôt que suivi.
 de chacun alimentant le contexte du suivant. `refine` exécute une boucle
 producteur/critique où un agent produit, un autre critique, et le premier
 corrige, jusqu'à ce que le critique réponde `VALIDATED` ou que les tours soient
-épuisés. Un livrable peut donc converger localement avant d'atteindre Claude.
+épuisés. Un livrable peut donc converger sur votre propre infrastructure avant
+d'atteindre Claude.
 
 ---
 
-## Backends
+## Infrastructure
 
-Orchestra parle deux protocoles : l'API native Ollama, et
-`/v1/chat/completions` pour tout le reste.
+Orchestra parle `/v1/chat/completions`, donc tout endpoint OpenAI-compatible est
+une cible valide, plus l'API native Ollama pour l'usage local.
 
-| Backend | Type | Usage typique |
+| Infrastructure | Type | Usage typique |
 |---|---|---|
-| **Ollama** | `ollama` | Inférence locale, par défaut |
-| **LiteLLM** | `openai` | Passerelle entreprise : routage central, quotas par équipe, rotation des clés, journalisation |
+| **LiteLLM** | `openai` | Passerelle entreprise : routage central, quotas par équipe, rotation des clés, audit |
 | **vLLM** | `openai` | Serveur d'inférence dédié haut débit |
 | **TGI** | `openai` | Text Generation Inference (Hugging Face) |
-| **LM Studio**, **llama.cpp** | `openai` | Alternatives locales à Ollama |
+| **Azure OpenAI**, proxies internes | `openai` | Tout endpoint d'entreprise derrière votre réseau |
 | **OpenRouter**, **Groq**, **Together** | `openai` | Fournisseurs hébergés, utiles pour absorber un pic |
-| **Azure OpenAI** et passerelles internes | `openai` | Tout endpoint OpenAI-compatible |
+| **LM Studio**, **llama.cpp** | `openai` | Serveurs locaux |
+| **Ollama** | `ollama` | Poste isolé, sans configuration |
 
-LiteLLM en mode proxy est le point d'entrée entreprise : une passerelle unique
-devant n'importe quel ensemble de fournisseurs, où se placent naturellement la
-politique de routage, les budgets et la journalisation d'audit.
+Les endpoints se déclarent dans [`config/backends.yaml`](config/backends.yaml)
+et se sélectionnent au runtime :
 
 ```bash
-ORCHESTRA_BACKEND=litellm LITELLM_API_KEY=... python -m orchestra.cli status
+ORCHESTRA_BACKEND=litellm python -m orchestra.cli status
+```
+
+### Pointer vers une passerelle existante
+
+La plupart des organisations en exploitent déjà une. Une entrée de backend
+demande l'endpoint, le nom de la variable qui porte sa clé, et les noms de
+modèles que cet endpoint publie :
+
+```yaml
+backends:
+  litellm:
+    type: openai
+    base_url: http://litellm.interne:4000/v1
+    api_key_env: LITELLM_API_KEY
+    num_ctx: 32768
+    models:
+      fast: qwen3-1.7b
+      code: qwen3-coder-30b
+      reason: qwen3-30b
+```
+
+La table `models` est le point important : elle court-circuite entièrement la
+détection matérielle, car la capacité d'une passerelle n'a aucun rapport avec le
+poste qui l'appelle. Sans elle, Orchestra dimensionnerait les modèles sur la
+machine locale, ce qui n'a aucun sens pour un endpoint distant.
+
+Pour repointer une entrée existante sans éditer le YAML, par exemple pour
+basculer une équipe de la préproduction vers la production :
+
+```bash
+ORCHESTRA_BACKEND=vllm ORCHESTRA_BASE_URL=http://gpu-prod.interne:8000/v1 python -m orchestra.cli status
 ```
 
 > [!IMPORTANT]
 > Aucune clé d'API n'est écrite en configuration. Un backend déclare le *nom* de
 > la variable d'environnement qui porte sa clé via `api_key_env`. La valeur est
-> relue à chaque appel et n'est jamais journalisée.
+> relue à chaque appel et n'est jamais journalisée. Un test vérifie qu'aucune clé
+> en clair ne figure dans le YAML.
 
-Les fournisseurs hébergés sont supportés, mais envoyer du code hors du réseau
-annule l'argument souveraineté. À utiliser en connaissance de cause.
-
----
-
-## Prérequis
-
-| | |
-|---|---|
-| **Python** | 3.10 ou plus |
-| **Backend** | [Ollama](https://ollama.com/download) en local, ou tout endpoint OpenAI-compatible |
-| **Mémoire** | 8 Go de VRAM recommandés en local. Fonctionne sans GPU sur le profil `cpu` |
-| **Disque** | Environ 6 Go pour les modèles du profil `sm` |
-
-Un backend distant n'impose aucun prérequis matériel local.
+> [!WARNING]
+> Les fournisseurs hébergés sont supportés, mais envoyer du code hors du réseau
+> annule l'argument souveraineté. À utiliser en connaissance de cause.
 
 ---
 
 ## Installation
 
+```bash
+python -m venv .venv
+source .venv/bin/activate          # .venv\Scripts\activate sous Windows
+pip install -r requirements.txt
+```
+
+Puis déclarez votre endpoint et vérifiez le câblage :
+
+```bash
+ORCHESTRA_BACKEND=litellm LITELLM_API_KEY=... python -m orchestra.cli status
+```
+
+`status` indique le backend actif, le modèle résolu pour chaque agent, et si
+l'endpoint répond. Rien d'autre n'est requis : ni GPU, ni runtime local.
+
+<details>
+<summary>Installation locale avec Ollama</summary>
+
+Pour une machine sans passerelle vers laquelle pointer, `setup.ps1` provisionne
+le venv, démarre Ollama, détecte le profil matériel et télécharge les modèles
+correspondants :
+
 ```powershell
-cd orchestra
 .\setup.ps1
 ```
 
-Le script provisionne un venv local, démarre Ollama si nécessaire, détecte le
-profil matériel et télécharge les modèles correspondants.
-
-<details>
-<summary>Installation manuelle (Linux / macOS)</summary>
+Sous Linux ou macOS, après avoir installé [Ollama](https://ollama.com/download) :
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-python -m orchestra.cli status   # backend, profil, modèles requis
-python -m orchestra.cli pull     # backend local uniquement
+python -m orchestra.cli status   # profil détecté et modèles requis
+python -m orchestra.cli pull     # les télécharge
 ```
+
+Comptez 3 à 20 Go de téléchargement selon le profil détecté.
 
 </details>
 
@@ -216,9 +259,9 @@ En pratique, la délégation se demande en langage naturel :
 
 > « Fais condenser ces 4000 lignes de logs par l'agent local avant de les lire. »
 >
-> « Passe ce diff au reviewer local, en premier filtre avant ta relecture. »
+> « Passe ce diff à l'agent reviewer, en premier filtre avant ta relecture. »
 >
-> « Fais écrire les tests par les agents locaux, avec une boucle de review. »
+> « Fais écrire les tests par les agents, avec une boucle de review. »
 
 ### Chaînage
 
@@ -239,9 +282,9 @@ En pratique, la délégation se demande en langage naturel :
 Orchestra s'utilise aussi sans Claude Code :
 
 ```bash
-python -m orchestra.cli status                                    # diagnostic complet
+python -m orchestra.cli status                                    # backend, modèles, santé
+python -m orchestra.cli backends                                  # endpoints configurés
 python -m orchestra.cli agents                                    # liste compacte
-python -m orchestra.cli backends                                  # backends configurés
 python -m orchestra.cli ask reviewer "Relis ce module" --file app.py
 python -m orchestra.cli delegate "explique cette erreur" --task explain --file trace.log
 python -m orchestra.cli pipeline examples/steps.review.json --input-file app.py
@@ -283,30 +326,7 @@ system: |
 | `output_format` | `json` pour contraindre la sortie |
 
 Ajouter un agent revient à déposer un YAML dans `agents/`. Rien d'autre à
-modifier.
-
-### Profils matériels
-
-[`config/profiles.yaml`](config/profiles.yaml) fait la traduction classe vers
-modèle selon la mémoire disponible, pour les backends locaux :
-
-| Profil | Budget mémoire | `fast` | `code` | `reason` | Contexte |
-|---|---|---|---|---|---|
-| `cpu` | pas de GPU | qwen2.5-coder:1.5b | qwen2.5-coder:3b | llama3.2:3b | 4 096 |
-| `xs` | 4-6 Go | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:3b | 4 096 |
-| `sm` | 8-11 Go | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:8b | 8 192 |
-| `md` | 12-20 Go | qwen2.5-coder:3b | qwen2.5-coder:14b | hermes3:8b | 16 384 |
-| `lg` | 24-40 Go | qwen2.5-coder:3b | qwen2.5-coder:32b | qwen2.5:32b | 32 768 |
-| `xl` | 48 Go et + | qwen2.5-coder:7b | qwen2.5-coder:32b | hermes3:70b | 65 536 |
-
-Le budget est la VRAM totale moins 10 % de marge, ou 60 % de la RAM en mode CPU.
-Les VRAM sont sommées en multi-GPU. Apple Silicon utilise la mémoire unifiée × 0,7.
-
-### Backends
-
-[`config/backends.yaml`](config/backends.yaml) déclare les endpoints
-disponibles. Un backend peut porter une table `models`, qui prend le pas sur le
-profil matériel.
+modifier, sur n'importe quel backend.
 
 ### Variables d'environnement
 
@@ -316,31 +336,85 @@ l'environnement réel.
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `ORCHESTRA_BACKEND` | `default` de `backends.yaml` | Backend actif |
-| `ORCHESTRA_BASE_URL` | définition du backend | Repointer un backend sans éditer le YAML |
-| `ORCHESTRA_PROFILE` | détection automatique | Force un profil matériel |
+| `ORCHESTRA_BACKEND` | `default` de `backends.yaml` | Endpoint actif |
+| `ORCHESTRA_BASE_URL` | définition du backend | Repointer un endpoint sans éditer le YAML |
+| `ORCHESTRA_PROFILE` | détection automatique | Force un profil matériel, backends locaux uniquement |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Serveur Ollama |
+
+### Profils matériels
+
+> Utilisés uniquement quand le backend actif ne déclare pas de table `models`,
+> ce qui en pratique désigne l'inférence locale. Une passerelle se dimensionne
+> elle-même.
+
+[`config/profiles.yaml`](config/profiles.yaml) fait la traduction classe vers
+modèle selon la mémoire disponible :
+
+| Profil | Budget mémoire | `fast` | `code` | `reason` | Contexte | Téléchargement |
+|---|---|---|---|---|---|---|
+| `cpu` | pas de GPU | qwen3:0.6b | qwen2.5-coder:1.5b | qwen3:1.7b | 4 096 | ~2,9 Go |
+| `xs` | 4-6 Go | qwen3:0.6b | qwen2.5-coder:3b | qwen3:4b | 8 192 | ~4,9 Go |
+| `sm` | 8-11 Go | qwen3:1.7b | qwen2.5-coder:7b | qwen3:8b | 8 192 | ~11 Go |
+| `md` | 12-20 Go | qwen3:1.7b | qwen2.5-coder:14b | qwen3:14b | 16 384 | ~20 Go |
+| `lg` | 24-40 Go | qwen3:4b | qwen3-coder:30b | qwen3:30b | 32 768 | ~41 Go |
+| `xl` | 48-79 Go | qwen3:4b | qwen3-coder:30b | qwen3:30b | 131 072 | ~41 Go |
+| `xxl` | 80 Go et + | qwen3:4b | qwen3-coder:30b | gpt-oss:120b | 131 072 | ~87 Go |
+
+Le budget est la VRAM totale moins 10 % de marge, ou 60 % de la RAM en mode CPU.
+Les VRAM sont sommées en multi-GPU. Apple Silicon utilise la mémoire unifiée × 0,7.
+
+`xl` fait tourner les mêmes poids que `lg` ; ce que la mémoire supplémentaire
+achète, c'est un cache KV bien plus large, d'où le saut de contexte.
+`qwen3-coder:30b` et `qwen3:30b` sont tous deux des modèles mixture-of-experts à
+environ 3 milliards de paramètres actifs, ce qui explique qu'ils restent
+exploitables à 19 Go.
+
+Deux contraintes gouvernent toute modification de ce fichier. `num_ctx`
+s'applique aux trois classes, il ne doit donc pas dépasser la plus petite fenêtre
+de contexte parmi elles : la famille `qwen2.5-coder` plafonne à 32K et les
+`qwen3` denses à 40K, tandis que `qwen3:4b`, `qwen3:30b` et `qwen3-coder:30b`
+atteignent 256K. Un test le vérifie. Ensuite, un profil doit loger son plus gros
+modèle dans le budget, en laissant de la place pour le cache.
+
+Pour du travail agentique multi-fichiers spécifiquement, `devstral:24b` (14 Go,
+contexte 128K) est une alternative solide pour la classe `code` sur une carte de
+20 Go ou plus.
+
+### Backends
+
+[`config/backends.yaml`](config/backends.yaml) déclare les endpoints
+disponibles. Voir [Infrastructure](#infrastructure) plus haut.
 
 ---
 
-## Adapter à une autre infrastructure
+## Schémas de déploiement
 
-Rien ne change dans `agents/`. Trois leviers couvrent le spectre :
-
-**Serveur d'inférence partagé.** Pointez les postes vers un GPU mutualisé. Un
-seul modèle chargé, amorti sur toute l'équipe.
+**Passerelle d'équipe.** Placez LiteLLM devant vos modèles. La politique de
+routage, les quotas et la journalisation d'audit deviennent un point de
+configuration unique au lieu d'une affaire de poste, et les postes n'ont besoin
+que de deux variables d'environnement.
 
 ```bash
-export ORCHESTRA_BACKEND=vllm
-export ORCHESTRA_BASE_URL=http://gpu-server.interne:8000/v1
+ORCHESTRA_BACKEND=litellm
+LITELLM_API_KEY=...
 ```
 
-**Passerelle d'entreprise.** Placez LiteLLM devant, et la politique de routage,
-les quotas et la journalisation d'audit deviennent un point de configuration
-unique plutôt qu'une affaire de poste de travail.
+**Cluster d'inférence dédié.** Pointez les postes vers un déploiement vLLM ou
+TGI mutualisé. Un seul modèle chargé, amorti sur toute l'équipe, aucun GPU local
+requis.
 
-**Autres modèles.** Éditez `config/profiles.yaml` ou la table `models` d'un
-backend : DeepSeek-Coder, Codestral, Devstral, Llama, ou vos propres fine-tunes.
+```bash
+ORCHESTRA_BACKEND=vllm
+ORCHESTRA_BASE_URL=http://gpu-cluster.interne:8000/v1
+```
+
+**Poste individuel.** Ollama avec détection matérielle, sans configuration.
+Utile pour le travail hors ligne, et pour évaluer le dispositif avant de
+provisionner une infrastructure partagée.
+
+**Mixte.** Rien n'empêche différentes équipes de pointer vers différents backends
+avec le même dossier `agents/` sous gestion de version, puisque les définitions
+d'agents ne portent aucun détail d'infrastructure.
 
 ---
 
@@ -357,25 +431,26 @@ orchestra/
 │   ├── documenter.yaml
 │   └── summarizer.yaml
 ├── config/
-│   ├── profiles.yaml          # classe de modèle -> modèle, par palier mémoire
-│   └── backends.yaml          # endpoints d'inférence
+│   ├── backends.yaml          # endpoints d'inférence
+│   └── profiles.yaml          # classe -> modèle, backends locaux uniquement
 ├── orchestra/
 │   ├── backends/
 │   │   ├── base.py            # contrat commun
-│   │   ├── ollama.py          # API native Ollama
-│   │   └── openai_compat.py   # /v1/chat/completions
+│   │   ├── openai_compat.py   # /v1/chat/completions
+│   │   └── ollama.py          # API native Ollama
+│   ├── console.py             # sortie UTF-8 robuste
 │   ├── env.py                 # chargement .env, sans dépendance
 │   ├── hardware.py            # détection GPU / RAM (CUDA, ROCm, Metal, CPU)
 │   ├── profiles.py            # sélection du profil, résolution des classes
 │   ├── config.py              # chargement et validation des agents
 │   ├── router.py              # scoring déterministe + triage LLM
-│   ├── registry.py            # cœur : agents + profil + backend
+│   ├── registry.py            # cœur : agents + backend + profil
 │   ├── pipeline.py            # chaînage et boucle producteur/critique
 │   ├── mcp_server.py          # serveur MCP (stdio)
 │   └── cli.py                 # interface en ligne de commande
 ├── tests/
 ├── examples/
-└── setup.ps1
+└── setup.ps1                  # amorçage Ollama local
 ```
 
 ---
@@ -386,25 +461,30 @@ orchestra/
 python -m pytest -q
 ```
 
-La suite couvre la sélection de profil, la validation des agents, les deux
-étages de routage, la sélection de backend, la couche de traduction
-OpenAI-compatible et le chaînage. Aucun test ne fait d'appel réseau : les
-backends passent par un transport simulé et les pipelines par un orchestrateur
-factice, ce qui garde la suite rapide et déterministe.
+La suite couvre la sélection de backend, la couche de traduction
+OpenAI-compatible, la sélection de profil et ses contraintes de contexte, la
+validation des agents, les deux étages de routage et le chaînage. Aucun test ne
+fait d'appel réseau : les backends passent par un transport simulé et les
+pipelines par un orchestrateur factice, ce qui garde la suite rapide et
+déterministe.
 
 ---
 
 ## Limites
 
-- **Qualité.** Un 7B ne raisonne pas sur plusieurs fichiers. Réservez-lui les
-  tâches locales et bien cadrées, laissez l'architecture à Claude.
-- **Swap de modèles.** Sur un GPU 8 Go, alterner `code` et `reason` force Ollama
-  à décharger et recharger, soit 5 à 15 s. Les pipelines qui enchaînent des
-  agents de la même classe sont nettement plus rapides.
-- **Vérification.** La sortie d'un agent local n'est pas une source de vérité.
-  Elle doit passer sous les yeux de Claude ou les vôtres.
-- **Fine-tuning.** La spécialisation est prompt-level. Un vrai fine-tune (LoRA)
-  irait plus loin, au prix d'un dataset et de temps GPU.
+- **Qualité.** Les petits modèles ne raisonnent pas sur plusieurs fichiers.
+  Réservez-leur les tâches locales et bien cadrées, laissez l'architecture à
+  Claude. C'est une affaire de taille de modèle, pas de lieu d'exécution : un
+  modèle de 30 B sur un cluster passe la barre qu'un 7 B sur un laptop ne passe
+  pas.
+- **Swap de modèles.** Sur un GPU local unique, alterner `code` et `reason`
+  force un déchargement et un rechargement, soit 5 à 15 s. Une passerelle aux
+  modèles résidents n'a pas ce coût, ce qui est une raison de préférer
+  l'infrastructure partagée bien avant que l'argument économique n'entre en jeu.
+- **Vérification.** La sortie d'un agent n'est pas une source de vérité. Elle
+  doit passer sous les yeux de Claude ou les vôtres.
+- **Spécialisation.** Elle est prompt-level. Un vrai fine-tune (LoRA) irait plus
+  loin, au prix d'un dataset et de temps GPU.
 
 ---
 
