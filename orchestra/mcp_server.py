@@ -18,7 +18,8 @@ try:  # mcp >= 2.0
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server
 
-from .ollama_client import OllamaUnavailable
+from .backends import BackendUnavailable
+from .console import force_utf8_output
 from .pipeline import parse_steps, run_pipeline, run_refine_loop
 from .registry import AgentNotFound, Orchestra
 
@@ -35,14 +36,14 @@ def get_orchestra() -> Orchestra:
 
 
 def _guard(exc: Exception) -> str:
-    if isinstance(exc, (AgentNotFound, OllamaUnavailable)):
+    if isinstance(exc, (AgentNotFound, BackendUnavailable)):
         return f"❌ {exc}"
     return f"❌ {type(exc).__name__}: {exc}"
 
 
 @mcp.tool()
 async def orchestra_status() -> str:
-    """Inventaire des agents locaux, profil materiel detecte et etat du serveur Ollama.
+    """Inventaire des agents, backend d'inference actif et etat du service.
 
     A appeler en premier dans une session pour savoir ce qui est disponible.
     """
@@ -141,6 +142,9 @@ async def refine(
 
 
 def main() -> None:
+    # Les rapports renvoyes aux outils contiennent des pictogrammes d'etat.
+    force_utf8_output()
+
     # Le transport stdio est un canal JSON-RPC : rien d'autre ne doit y ecrire.
     # httpx logge chaque requete en INFO, on le fait taire.
     logging.getLogger("httpx").setLevel(logging.WARNING)

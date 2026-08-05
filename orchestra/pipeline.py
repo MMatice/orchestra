@@ -5,8 +5,8 @@ N devient le contexte de l'etape N+1. Deux formes :
 
   - `run_pipeline` : sequence libre decrite par l'appelant (Claude decide
     quels agents enchainer et dans quel ordre) ;
-  - `run_refine_loop` : boucle producteur/critique — un agent produit, un
-    autre critique, le premier corrige — jusqu'a validation ou epuisement
+  - `run_refine_loop` : boucle producteur/critique - un agent produit, un
+    autre critique, le premier corrige - jusqu'a validation ou epuisement
     des tours.
 """
 
@@ -36,9 +36,9 @@ class PipelineResult:
     stop_reason: str = ""
 
     def as_markdown(self) -> str:
-        parts = [f"## Pipeline — {len(self.runs)} etape(s)", ""]
+        parts = [f"## Pipeline - {len(self.runs)} etape(s)", ""]
         for index, run in enumerate(self.runs, start=1):
-            parts.append(f"**Etape {index} — `{run.agent}` ({run.model})**")
+            parts.append(f"**Etape {index} - `{run.agent}` ({run.model})**")
             parts.append("")
             parts.append(run.content)
             parts.append("")

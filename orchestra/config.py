@@ -42,18 +42,33 @@ class AgentSpec:
     output_format: str | None = None
     source_path: Path | None = None
 
-    def resolve_model(self, profile: Profile) -> str:
-        """Modele Ollama reel a utiliser sur ce materiel."""
-        return self.pinned_model or profile.model_for(self.model_class)
+    def resolve_model(
+        self, profile: Profile, model_overrides: dict[str, str] | None = None
+    ) -> str:
+        """Modele reel a utiliser, par ordre de priorite decroissante.
 
-    def resolve_options(self, profile: Profile) -> dict[str, Any]:
+        1. `pinned_model` de l'agent - decision explicite, elle prime.
+        2. Surcharge du backend - une passerelle distante publie ses propres
+           noms de modeles, sans rapport avec le materiel local.
+        3. Profil materiel detecte.
+        """
+        if self.pinned_model:
+            return self.pinned_model
+        if model_overrides and self.model_class in model_overrides:
+            return model_overrides[self.model_class]
+        return profile.model_for(self.model_class)
+
+    def resolve_options(
+        self, profile: Profile, num_ctx_cap: int | None = None
+    ) -> dict[str, Any]:
+        # Le plafond vient du backend quand il en impose un, sinon du profil
+        # materiel. Un agent peut demander moins (plus rapide), jamais plus.
+        cap = num_ctx_cap or profile.num_ctx
         return {
             "temperature": self.temperature,
             "top_p": self.top_p,
             "num_predict": self.num_predict,
-            # Le contexte du profil est un plafond materiel : un agent peut
-            # demander moins (plus rapide) mais jamais plus.
-            "num_ctx": min(self.num_ctx or profile.num_ctx, profile.num_ctx),
+            "num_ctx": min(self.num_ctx or cap, cap),
         }
 
     @classmethod

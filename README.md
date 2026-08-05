@@ -2,76 +2,70 @@
 
 # Orchestra
 
-**Déléguez les tâches routinières de Claude Code à des agents LLM locaux.**
+**Delegate routine coding tasks from Claude Code to local LLM agents.**
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)](https://modelcontextprotocol.io/)
-[![Ollama](https://img.shields.io/badge/backend-Ollama-000000?logo=ollama&logoColor=white)](https://ollama.com/)
-[![Tests](https://img.shields.io/badge/tests-32%20passed-3FB950)](#tests)
+[![Backends](https://img.shields.io/badge/backends-Ollama%20%7C%20OpenAI--compatible-000000)](#backends)
+[![Tests](https://img.shields.io/badge/tests-52%20passed-3FB950)](#tests)
 [![License](https://img.shields.io/badge/license-MIT-3FB950)](LICENSE)
+
+**English** · [Français](README.fr.md)
 
 </div>
 
 ---
 
-## Sommaire
+Orchestra exposes a bench of specialised local agents as MCP tools. Claude stays
+the orchestrator: it keeps the overall picture, decides what to delegate and to
+whom, and checks what comes back. The mechanical work goes down one level:
+explaining a function, reviewing a diff, writing obvious tests, condensing logs.
 
-- [Le problème](#le-problème)
-- [Comment ça marche](#comment-ça-marche)
-- [Prérequis](#prérequis)
-- [Installation](#installation)
-- [Utilisation depuis Claude Code](#utilisation-depuis-claude-code)
-- [Utilisation en CLI](#utilisation-en-cli)
-- [Configuration](#configuration)
-- [Adapter à une autre machine](#adapter-à-une-autre-machine)
-- [Structure du projet](#structure-du-projet)
-- [Tests](#tests)
-- [Limites connues](#limites-connues)
-- [Licence](#licence)
-
----
-
-## Le problème
-
-Une part importante de ce qu'on demande à un assistant de code est routinière :
-résumer des logs, expliquer une fonction, relire un diff, écrire des tests
-évidents, rédiger une docstring. Ces tâches ne demandent pas un modèle
-frontière — mais elles sont facturées au même tarif que celles qui en ont
-besoin.
-
-Orchestra expose un banc d'**agents locaux spécialisés** comme outils MCP.
-Claude reste l'orchestrateur : il garde la vision d'ensemble, décide quoi
-déléguer, à qui, et vérifie ce qui revient. Le travail mécanique descend d'un
-étage.
-
-**Trois bénéfices, par ordre d'importance réelle :**
+Three properties follow, in order of practical weight:
 
 | | |
 |---|---|
-| 🔒 **Souveraineté** | Le code ne quitte jamais le réseau. Décisif en finance, santé, défense, ou sur du code sous NDA. |
-| 💰 **Coût** | Les tâches routinières passent à coût marginal nul une fois le matériel amorti. |
-| ⚡ **Latence** | Pas d'aller-retour réseau sur les micro-tâches (triage, résumé). |
+| 🔒 **Data residency** | Code never leaves the network. Decisive under NDA, or in regulated sectors. |
+| 💰 **Cost** | Routine tasks drop to marginal cost once the hardware is amortised. |
+| ⚡ **Latency** | No network round trip on micro-tasks such as triage and summarisation. |
 
 > [!NOTE]
-> **Orchestra ne remplace pas Claude.** Les modèles locaux 7-8B décrochent
-> nettement sur le raisonnement multi-fichiers et l'implémentation complexe.
-> Le gain vient de la répartition, pas de la substitution.
+> Orchestra does not replace Claude. Local 7-8B models degrade sharply on
+> multi-file reasoning and complex implementation. The gain comes from
+> distribution, not substitution.
 
 ---
 
-## Comment ça marche
+## Contents
+
+- [How it works](#how-it-works)
+- [Backends](#backends)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Use from Claude Code](#use-from-claude-code)
+- [Command line](#command-line)
+- [Configuration](#configuration)
+- [Adapting to other infrastructure](#adapting-to-other-infrastructure)
+- [Project structure](#project-structure)
+- [Tests](#tests)
+- [Limitations](#limitations)
+- [License](#license)
+
+---
+
+## How it works
 
 ```mermaid
 flowchart TB
-    U[Utilisateur] --> C[Claude Code]
-    C -->|outils MCP| O[Serveur MCP Orchestra]
+    U[User] --> C[Claude Code]
+    C -->|MCP tools| O[Orchestra MCP server]
 
-    O --> R{Routeur}
-    R -->|score déterministe| A
-    R -.->|si ambigu : arbitrage LLM| T[triage · fast]
+    O --> R{Router}
+    R -->|deterministic score| A
+    R -.->|if ambiguous: LLM arbitration| T[triage · fast]
     T -.-> A
 
-    subgraph A[Agents locaux]
+    subgraph A[Specialised agents]
         direction LR
         A1[explainer]
         A2[reviewer]
@@ -81,43 +75,90 @@ flowchart TB
         A6[summarizer]
     end
 
-    A --> P[Profil matériel]
-    P -->|classe → modèle| OL[(Ollama)]
+    A --> P[Model resolution]
+    P --> B{Backend}
+    B --> B1[(Ollama)]
+    B --> B2[(OpenAI-compatible)]
 
     style C fill:#D97757,color:#fff
     style O fill:#6E56CF,color:#fff
-    style OL fill:#000,color:#fff
 ```
 
-### Les trois idées du design
+**An agent is a configuration layer, not a model.** No model is ever cloned or
+rebuilt. An agent is a role prompt, inference parameters and routing metadata,
+applied at call time on top of a shared base model. Editing an agent means
+editing one YAML file: the change takes effect on the next start, no weights are
+duplicated, and every agent of the same class reuses a single loaded model.
 
-**1. Un agent est une configuration, pas un modèle.**
-Aucun modèle n'est cloné ni recréé. Un agent = un system prompt métier + des
-paramètres d'inférence + des métadonnées de routage, appliqués à l'appel sur un
-modèle de base partagé. Modifier un agent, c'est éditer un YAML — effet
-immédiat, aucune reconstruction, aucun poids dupliqué.
+**An agent never names a model.** It declares a class, `fast`, `code` or
+`reason`, and the class is resolved at startup. Resolution walks three levels, in
+decreasing priority: an explicit `pinned_model` on the agent, then the active
+backend's model map, then the hardware profile detected on the machine. Local
+detection measures usable memory, sums multi-GPU VRAM and falls back to RAM when
+no GPU is present. A remote gateway publishes its own model names and its own
+capacity, so when a backend declares a model map that map wins and local
+detection stops being relevant. The same `agents/` directory therefore runs
+unchanged from a CPU-only laptop to a dual-GPU server or a shared gateway.
 
-**2. Un agent ne nomme jamais un modèle.**
-Il déclare une **classe** : `fast`, `code` ou `reason`. Le profil matériel
-détecté au démarrage traduit la classe en modèle réel. Le même dossier
-`agents/` tourne sur un laptop 8 Go et sur un serveur bi-GPU 48 Go, sans
-modification.
+**Routing is deterministic first, LLM second.** A score over the declared task
+type and keyword hits settles the majority of requests for zero tokens. Partial
+matches are weighted by how much of the task label they actually cover, so a
+composite type such as `code-review` reaches the agent declaring `review` rather
+than the one declaring `code`. Only genuinely ambiguous requests fall through to
+arbitration by the small `fast` model, constrained to JSON, and a hallucinated
+agent name is rejected rather than followed.
 
-**3. Le routage est déterministe d'abord, LLM ensuite.**
-Un score sur le type de tâche et les mots-clés tranche la majorité des cas pour
-zéro token. Seules les demandes réellement ambiguës déclenchent un arbitrage
-par le petit modèle `fast`, en JSON contraint.
+**Agents can drive each other.** `pipeline` chains them, feeding each output
+into the next agent's context. `refine` runs a producer/critic loop where one
+agent produces, another critiques, and the first corrects, until the critic
+answers `VALIDATED` or the rounds run out. A deliverable can therefore converge
+locally before it ever reaches Claude.
 
 ---
 
-## Prérequis
+## Backends
+
+Orchestra speaks two protocols: the native Ollama API, and
+`/v1/chat/completions` for everything else.
+
+| Backend | Type | Typical use |
+|---|---|---|
+| **Ollama** | `ollama` | Local inference, default |
+| **LiteLLM** | `openai` | Enterprise gateway: central routing, per-team quotas, key rotation, logging |
+| **vLLM** | `openai` | Dedicated high-throughput inference server |
+| **TGI** | `openai` | Hugging Face Text Generation Inference |
+| **LM Studio**, **llama.cpp** | `openai` | Local alternatives to Ollama |
+| **OpenRouter**, **Groq**, **Together** | `openai` | Hosted providers, useful to absorb a spike |
+| **Azure OpenAI** and internal gateways | `openai` | Any OpenAI-compatible endpoint |
+
+LiteLLM in proxy mode is the enterprise entry point: a single gateway in front
+of any set of providers, which is where routing policy, budgets and audit
+logging belong.
+
+```bash
+ORCHESTRA_BACKEND=litellm LITELLM_API_KEY=... python -m orchestra.cli status
+```
+
+> [!IMPORTANT]
+> API keys are never written to configuration. A backend declares the *name* of
+> the environment variable holding its key via `api_key_env`. The value is read
+> at call time and never logged.
+
+Hosted providers are supported, but sending code off-network cancels the data
+residency argument. Use them deliberately.
+
+---
+
+## Requirements
 
 | | |
 |---|---|
-| **Python** | 3.10 ou plus |
-| **[Ollama](https://ollama.com/download)** | installé et démarré |
-| **Mémoire** | 8 Go de VRAM recommandés. Fonctionne sans GPU (profil `cpu`, plus lent) |
-| **Disque** | ~6 Go pour les modèles du profil `sm` |
+| **Python** | 3.10 or later |
+| **Backend** | [Ollama](https://ollama.com/download) for local use, or any OpenAI-compatible endpoint |
+| **Memory** | 8 GB VRAM recommended for local inference. Works without a GPU on the `cpu` profile |
+| **Disk** | About 6 GB for the `sm` profile models |
+
+Remote backends have no local hardware requirement.
 
 ---
 
@@ -128,84 +169,81 @@ cd orchestra
 .\setup.ps1
 ```
 
-Le script installe les dépendances dans un venv local, démarre Ollama si
-nécessaire, détecte le profil matériel et télécharge les modèles correspondants.
+The script provisions a local virtualenv, starts Ollama if needed, detects the
+hardware profile and pulls the matching models.
 
 <details>
-<summary>Installation manuelle (Linux / macOS)</summary>
+<summary>Manual installation (Linux / macOS)</summary>
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m orchestra.cli status   # profil détecté + modèles requis
-python -m orchestra.cli pull     # télécharge les modèles du profil
+python -m orchestra.cli status   # backend, profile, required models
+python -m orchestra.cli pull     # local backend only
 ```
 
 </details>
 
-### Enregistrer le serveur MCP
+### Register the MCP server
 
 ```bash
-claude mcp add orchestra --scope user -- /chemin/vers/orchestra/.venv/bin/python -m orchestra.mcp_server
+claude mcp add orchestra --scope user -- /path/to/orchestra/.venv/bin/python -m orchestra.mcp_server
 ```
 
-Sous Windows, l'interpréteur est `.venv\Scripts\python.exe`. Sinon, copiez
-[`.mcp.json.example`](.mcp.json.example) en `.mcp.json` et complétez le chemin.
+On Windows the interpreter is `.venv\Scripts\python.exe`. Alternatively, copy
+[`.mcp.json.example`](.mcp.json.example) to `.mcp.json` and fill in the path.
 
 ---
 
-## Utilisation depuis Claude Code
+## Use from Claude Code
 
-Cinq outils sont exposés :
+Five tools are exposed:
 
-| Outil | Rôle |
+| Tool | Purpose |
 |---|---|
-| `orchestra_status` | Inventaire des agents, profil matériel, état d'Ollama |
-| `ask_agent` | Appelle un agent nommé |
-| `delegate` | Laisse le routeur choisir l'agent |
-| `pipeline` | Enchaîne plusieurs agents, sortie → contexte du suivant |
-| `refine` | Boucle producteur / critique jusqu'à validation |
+| `orchestra_status` | Agent inventory, active backend, health |
+| `ask_agent` | Call a named agent |
+| `delegate` | Let the router pick the agent |
+| `pipeline` | Chain agents, each output feeding the next |
+| `refine` | Producer/critic loop until validation |
 
-En pratique, la délégation se demande en langage naturel :
+In practice delegation is requested in plain language:
 
-> « Fais résumer ces 4000 lignes de logs par l'agent local avant de les lire. »
+> "Have the local agent condense these 4000 lines of logs before you read them."
 >
-> « Passe ce diff au reviewer local, je veux un premier filtre avant ta relecture. »
+> "Run this diff through the local reviewer as a first pass before yours."
 >
-> « Fais écrire les tests par les agents locaux, avec une boucle de review. »
+> "Have the local agents write the tests, with a review loop."
 
-### Chaînage
+### Chaining
 
-`pipeline` fait travailler un agent à partir de la sortie d'un autre :
+`pipeline` takes an explicit sequence:
 
 ```json
 [
-  { "agent": "implementer", "instruction": "Écris la fonction décrite dans la spec" },
-  { "agent": "reviewer",    "instruction": "Relis le code produit" },
-  { "agent": "tester",      "instruction": "Écris les tests du code validé" }
+  { "agent": "implementer", "instruction": "Write the function described in the spec" },
+  { "agent": "reviewer",    "instruction": "Review the code produced" },
+  { "agent": "tester",      "instruction": "Write tests for the validated code" }
 ]
 ```
 
-`refine` automatise le cas le plus utile : produire → critiquer → corriger, en
-boucle, jusqu'à ce que le critique réponde `VALIDATED` ou que les tours soient
-épuisés. Le livrable converge localement avant de remonter à Claude.
-
 ---
 
-## Utilisation en CLI
+## Command line
 
-Orchestra s'utilise aussi sans Claude Code :
+Orchestra also runs standalone:
 
 ```bash
-python -m orchestra.cli status                                    # diagnostic complet
-python -m orchestra.cli agents                                    # liste compacte
-python -m orchestra.cli ask reviewer "Relis ce module" --file app.py
-python -m orchestra.cli delegate "explique cette erreur" --task explain --file trace.log
+python -m orchestra.cli status                                    # full diagnostic
+python -m orchestra.cli agents                                    # compact agent list
+python -m orchestra.cli backends                                  # configured backends
+python -m orchestra.cli ask reviewer "Review this module" --file app.py
+python -m orchestra.cli delegate "explain this error" --task explain --file trace.log
 python -m orchestra.cli pipeline examples/steps.review.json --input-file app.py
-python -m orchestra.cli refine "Écris un parseur d'ISO-8601 sans dépendance"
-python -m orchestra.cli pull                                      # modèles du profil
+python -m orchestra.cli refine "Write an ISO-8601 parser with no dependency"
+python -m orchestra.cli pull                                      # local backend only
 ```
 
 ---
@@ -214,11 +252,11 @@ python -m orchestra.cli pull                                      # modèles du 
 
 ### Agents
 
-Un agent par fichier dans [`agents/`](agents/) :
+One agent per file in [`agents/`](agents/):
 
 ```yaml
 name: reviewer
-description: Relit un diff et remonte bugs et risques, triés par gravité.
+description: Reviews a diff and reports bugs and risks, ordered by severity.
 model_class: code            # fast | code | reason
 tasks: [review, revue, audit]
 keywords: [review, relis, bug, qualite]
@@ -231,75 +269,80 @@ system: |
   ...
 ```
 
-| Champ | Rôle |
+| Field | Purpose |
 |---|---|
-| `model_class` | **`fast`** triage et résumé · **`code`** implémentation, review, tests · **`reason`** explication, documentation |
-| `tasks` | Types de tâches revendiqués — moteur principal du routage |
-| `keywords` | Mots déclencheurs quand aucun type n'est fourni |
-| `temperature` | 0.0–0.15 pour du code, 0.25–0.35 pour de la prose |
-| `num_ctx` | Optionnel. Plafonné par le profil : un agent ne peut pas faire déborder la VRAM |
-| `pinned_model` | Optionnel. Épingle un modèle précis et court-circuite le profil |
-| `output_format` | `json` pour contraindre la sortie |
+| `model_class` | **`fast`** triage and summarisation · **`code`** implementation, review, tests · **`reason`** explanation, documentation |
+| `tasks` | Claimed task types, the primary routing signal |
+| `keywords` | Trigger words when no task type is supplied |
+| `temperature` | 0.0-0.15 for code, 0.25-0.35 for prose |
+| `num_ctx` | Optional, capped by the backend or the profile |
+| `pinned_model` | Optional, pins a specific model and bypasses resolution |
+| `output_format` | `json` to constrain the output |
 
-**Ajouter un agent** : déposez un YAML dans `agents/`, il est chargé au
-démarrage suivant. Rien d'autre à modifier.
+Adding an agent means dropping a YAML file into `agents/`. Nothing else changes.
 
-### Profils matériels
+### Hardware profiles
 
-[`config/profiles.yaml`](config/profiles.yaml) fait la traduction
-classe → modèle selon la mémoire disponible :
+[`config/profiles.yaml`](config/profiles.yaml) maps class to model by available
+memory, for local backends:
 
-| Profil | Budget mémoire | `fast` | `code` | `reason` | Contexte |
+| Profile | Memory budget | `fast` | `code` | `reason` | Context |
 |---|---|---|---|---|---|
-| `cpu` | pas de GPU | qwen2.5-coder:1.5b | qwen2.5-coder:3b | llama3.2:3b | 4 096 |
-| `xs` | 4–6 Go | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:3b | 4 096 |
-| `sm` | 8–11 Go | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:8b | 8 192 |
-| `md` | 12–20 Go | qwen2.5-coder:3b | qwen2.5-coder:14b | hermes3:8b | 16 384 |
-| `lg` | 24–40 Go | qwen2.5-coder:3b | qwen2.5-coder:32b | qwen2.5:32b | 32 768 |
-| `xl` | 48 Go et + | qwen2.5-coder:7b | qwen2.5-coder:32b | hermes3:70b | 65 536 |
+| `cpu` | no GPU | qwen2.5-coder:1.5b | qwen2.5-coder:3b | llama3.2:3b | 4 096 |
+| `xs` | 4-6 GB | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:3b | 4 096 |
+| `sm` | 8-11 GB | qwen2.5-coder:1.5b | qwen2.5-coder:7b | hermes3:8b | 8 192 |
+| `md` | 12-20 GB | qwen2.5-coder:3b | qwen2.5-coder:14b | hermes3:8b | 16 384 |
+| `lg` | 24-40 GB | qwen2.5-coder:3b | qwen2.5-coder:32b | qwen2.5:32b | 32 768 |
+| `xl` | 48 GB and up | qwen2.5-coder:7b | qwen2.5-coder:32b | hermes3:70b | 65 536 |
 
-Le budget est la VRAM totale moins 10 % de marge, ou 60 % de la RAM en mode
-CPU. Multi-GPU : les VRAM sont sommées. Apple Silicon : mémoire unifiée × 0,7.
+The budget is total VRAM minus a 10 % margin, or 60 % of RAM in CPU mode.
+Multi-GPU VRAM is summed. Apple Silicon uses unified memory × 0.7.
 
-### Variables d'environnement
+### Backends
 
-Toutes optionnelles. Copiez [`.env.example`](.env.example) en `.env` — le
-fichier est chargé au démarrage, et **une variable déjà définie dans
-l'environnement réel n'est jamais écrasée**.
+[`config/backends.yaml`](config/backends.yaml) declares the available endpoints.
+A backend may carry a `models` map, which overrides the hardware profile.
 
-| Variable | Défaut | Rôle |
+### Environment variables
+
+All optional. Copy [`.env.example`](.env.example) to `.env`. The file is loaded
+at startup and never overrides a variable already set in the real environment.
+
+| Variable | Default | Purpose |
 |---|---|---|
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Serveur Ollama. Pointez-le vers un GPU mutualisé pour un déploiement d'équipe |
-| `ORCHESTRA_PROFILE` | détection automatique | Force un profil (`cpu`, `xs`, `sm`, `md`, `lg`, `xl`) |
+| `ORCHESTRA_BACKEND` | `default` from `backends.yaml` | Active backend |
+| `ORCHESTRA_BASE_URL` | backend definition | Repoint a backend without editing YAML |
+| `ORCHESTRA_PROFILE` | auto-detected | Force a hardware profile |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server |
 
 ---
 
-## Adapter à une autre machine
+## Adapting to other infrastructure
 
-Rien à modifier dans `agents/`. Trois leviers suffisent :
+Nothing in `agents/` changes. Three levers cover the range:
 
-**Serveur d'inférence partagé.** Pointez les postes vers un GPU mutualisé —
-c'est le déploiement qui a le plus de sens en entreprise : un seul modèle
-chargé, amorti sur toute l'équipe.
+**Shared inference server.** Point workstations at a pooled GPU. One model
+loaded, amortised across the team.
 
 ```bash
-export OLLAMA_HOST=http://gpu-server.interne:11434
-export ORCHESTRA_PROFILE=xl
+export ORCHESTRA_BACKEND=vllm
+export ORCHESTRA_BASE_URL=http://gpu-server.internal:8000/v1
 ```
 
-**Autres modèles.** Éditez `config/profiles.yaml` — DeepSeek-Coder, Codestral,
-Devstral, Llama, ou vos propres modèles fine-tunés.
+**Enterprise gateway.** Put LiteLLM in front, and routing policy, quotas and
+audit logging become a single point of configuration rather than a per-seat
+concern.
 
-**Agent hors profil.** `pinned_model` épingle un modèle sur un agent précis,
-indépendamment du matériel détecté.
+**Other models.** Edit `config/profiles.yaml` or a backend's `models` map:
+DeepSeek-Coder, Codestral, Devstral, Llama, or your own fine-tunes.
 
 ---
 
-## Structure du projet
+## Project structure
 
 ```
 orchestra/
-├── agents/                    # ← un agent = un YAML (c'est ici qu'on édite)
+├── agents/                    # one agent = one YAML, this is what you edit
 │   ├── triage.yaml
 │   ├── explainer.yaml
 │   ├── reviewer.yaml
@@ -308,18 +351,22 @@ orchestra/
 │   ├── documenter.yaml
 │   └── summarizer.yaml
 ├── config/
-│   └── profiles.yaml          # classe de modèle → modèle réel, par palier mémoire
+│   ├── profiles.yaml          # model class -> model, by memory tier
+│   └── backends.yaml          # inference endpoints
 ├── orchestra/
-│   ├── env.py                 # chargement .env (sans dépendance)
-│   ├── hardware.py            # détection GPU / RAM (CUDA, ROCm, Metal, CPU)
-│   ├── profiles.py            # sélection du profil, résolution des classes
-│   ├── config.py              # chargement et validation des agents
-│   ├── ollama_client.py       # client HTTP Ollama
-│   ├── router.py              # scoring déterministe + triage LLM
-│   ├── registry.py            # cœur : agents + profil + exécution
-│   ├── pipeline.py            # chaînage et boucle producteur/critique
-│   ├── mcp_server.py          # serveur MCP (stdio)
-│   └── cli.py                 # interface en ligne de commande
+│   ├── backends/
+│   │   ├── base.py            # backend contract
+│   │   ├── ollama.py          # native Ollama API
+│   │   └── openai_compat.py   # /v1/chat/completions
+│   ├── env.py                 # .env loading, no dependency
+│   ├── hardware.py            # GPU / RAM detection (CUDA, ROCm, Metal, CPU)
+│   ├── profiles.py            # profile selection and class resolution
+│   ├── config.py              # agent loading and validation
+│   ├── router.py              # deterministic scoring + LLM triage
+│   ├── registry.py            # core: agents + profile + backend
+│   ├── pipeline.py            # chaining and producer/critic loop
+│   ├── mcp_server.py          # MCP server (stdio)
+│   └── cli.py                 # command line interface
 ├── tests/
 ├── examples/
 └── setup.ps1
@@ -333,27 +380,28 @@ orchestra/
 python -m pytest -q
 ```
 
-La suite couvre la sélection de profil, la validation des agents, les deux
-étages de routage et le chaînage — sans jamais appeler Ollama : les tests de
-pipeline s'exécutent contre un orchestrateur factice et restent donc rapides et
-déterministes.
+The suite covers profile selection, agent validation, both routing stages,
+backend selection, the OpenAI-compatible translation layer and chaining. No test
+performs a network call: backends are exercised through a mock transport and
+pipelines against a stub orchestrator, so the suite stays fast and
+deterministic.
 
 ---
 
-## Limites connues
+## Limitations
 
-- **Qualité.** Un 7B ne raisonne pas sur plusieurs fichiers. Réservez-lui les
-  tâches locales et bien cadrées ; laissez l'architecture à Claude.
-- **Swap de modèles.** Sur un GPU 8 Go, alterner `code` et `reason` force
-  Ollama à décharger et recharger — comptez 5 à 15 s. Les pipelines qui
-  enchaînent deux agents de la même classe sont nettement plus rapides.
-- **Vérification.** La sortie d'un agent local n'est pas une source de vérité.
-  Elle doit passer sous les yeux de Claude ou les vôtres.
-- **Fine-tuning.** La spécialisation est prompt-level. Un vrai fine-tuning
-  (LoRA) donnerait davantage, au prix d'un dataset et de temps GPU.
+- **Quality.** A 7B model does not reason across files. Give it local,
+  well-bounded tasks and leave architecture to Claude.
+- **Model swapping.** On an 8 GB GPU, alternating between `code` and `reason`
+  forces Ollama to unload and reload, costing 5 to 15 seconds. Pipelines that
+  chain agents of the same class are noticeably faster.
+- **Verification.** Local agent output is not a source of truth. It should pass
+  under Claude's review or yours.
+- **Fine-tuning.** Specialisation is prompt-level. A real fine-tune (LoRA) would
+  go further, at the cost of a dataset and GPU time.
 
 ---
 
-## Licence
+## License
 
 [MIT](LICENSE)

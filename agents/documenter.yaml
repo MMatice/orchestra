@@ -17,7 +17,7 @@ system: |
   - Document the contract, not the implementation: parameters, return value,
     raised exceptions, side effects, and any non-obvious precondition.
   - Never describe an argument you cannot see in the signature.
-  - No filler. "Initialises the class" for an `__init__` adds nothing — say what
+  - No filler. "Initialises the class" for an `__init__` adds nothing - say what
     invariant it establishes or say less.
   - For a README: what it does, install, minimal working example, configuration.
     In that order. No badges, no roadmap, no "Contributing" unless asked.

@@ -1,4 +1,4 @@
-"""CLI de test — permet d'utiliser Orchestra sans passer par Claude Code.
+"""CLI de test - permet d'utiliser Orchestra sans passer par Claude Code.
 
   python -m orchestra.cli status
   python -m orchestra.cli agents
@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .backends import load_backend_config
+from .console import force_utf8_output
 from .pipeline import parse_steps, run_pipeline, run_refine_loop
 from .registry import Orchestra
 
@@ -41,11 +43,36 @@ async def _run(args: argparse.Namespace) -> int:
         for spec in orch.agents.values():
             print(
                 f"{spec.name:<14} {spec.model_class:<7} "
-                f"{spec.resolve_model(orch.profile):<24} {spec.description}"
+                f"{orch.model_for(spec):<40} {spec.description}"
+            )
+        return 0
+
+    if args.command == "backends":
+        default_name, entries = load_backend_config()
+        for name, spec in entries.items():
+            spec = spec or {}
+            marks = []
+            if name == orch.backend.name:
+                marks.append("actif")
+            if name == default_name:
+                marks.append("defaut")
+            suffix = f"  [{', '.join(marks)}]" if marks else ""
+            key = spec.get("api_key_env")
+            key_txt = f" (cle: {key})" if key else ""
+            print(
+                f"{name:<12} {str(spec.get('type', 'ollama')):<7} "
+                f"{str(spec.get('base_url', '-')):<40}{key_txt}{suffix}"
             )
         return 0
 
     if args.command == "pull":
+        if not orch.backend.supports_pull:
+            print(
+                f"Le backend '{orch.backend.name}' est distant : les modeles y "
+                "sont deployes par son administrateur, pas depuis ce poste.",
+                file=sys.stderr,
+            )
+            return 1
         models = orch.required_models()
         print(f"Modeles requis pour le profil '{orch.profile.id}' : {models}\n")
         for model in models:
@@ -91,9 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orchestra", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="materiel, profil, agents, etat d'Ollama")
+    sub.add_parser("status", help="backend, materiel, profil, agents, sante")
     sub.add_parser("agents", help="liste compacte des agents")
-    sub.add_parser("pull", help="telecharge les modeles requis par le profil")
+    sub.add_parser("backends", help="backends configures et backend actif")
+    sub.add_parser("pull", help="telecharge les modeles requis (backend local)")
 
     p_ask = sub.add_parser("ask", help="appelle un agent precis")
     p_ask.add_argument("agent")
@@ -119,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    force_utf8_output()
     args = build_parser().parse_args()
     try:
         raise SystemExit(asyncio.run(_run(args)))

@@ -1,14 +1,14 @@
-"""Coeur d'Orchestra : cablage agents + profil materiel + serveur Ollama."""
+"""Coeur d'Orchestra : cablage agents + profil materiel + backend d'inference."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from .backends import Backend, BackendUnavailable, create_backend
 from .config import AgentSpec, load_agents
 from .env import load_dotenv
 from .hardware import Hardware
-from .ollama_client import OllamaClient, OllamaUnavailable
 from .profiles import Profile, select_profile
 from .router import (
     AMBIGUITY_THRESHOLD,
@@ -34,7 +34,7 @@ class AgentRun:
     def as_markdown(self) -> str:
         header = f"### {self.agent}"
         if self.routing:
-            header += f"  _(routage: {self.routing.method} — {self.routing.reason})_"
+            header += f"  _(routage: {self.routing.method} - {self.routing.reason})_"
         return f"{header}\n\n{self.content}\n\n---\n`{self.stats}`"
 
 
@@ -49,20 +49,30 @@ class Orchestra:
         profile: Profile,
         hardware: Hardware,
         profile_reason: str,
-        client: OllamaClient | None = None,
+        backend: Backend,
+        backend_reason: str = "",
     ) -> None:
         self.agents = agents
         self.profile = profile
         self.hardware = hardware
         self.profile_reason = profile_reason
-        self.client = client or OllamaClient()
+        self.backend = backend
+        self.backend_reason = backend_reason
 
     @classmethod
     def bootstrap(cls, agents_dir: Path | None = None) -> "Orchestra":
-        # Avant toute lecture de OLLAMA_HOST / ORCHESTRA_PROFILE.
+        # Avant toute lecture de variable d'environnement.
         load_dotenv()
-        profile, hardware, reason = select_profile()
-        return cls(load_agents(agents_dir), profile, hardware, reason)
+        backend, backend_reason = create_backend()
+        profile, hardware, profile_reason = select_profile()
+        return cls(
+            load_agents(agents_dir),
+            profile,
+            hardware,
+            profile_reason,
+            backend,
+            backend_reason,
+        )
 
     # ------------------------------------------------------------------ infos
 
@@ -74,53 +84,105 @@ class Orchestra:
                 f"Agent '{name}' inconnu. Disponibles : {sorted(self.agents)}"
             ) from exc
 
+    @property
+    def remote_models(self) -> bool:
+        """Le backend impose-t-il ses propres modeles ?
+
+        Si oui, le profil materiel local ne decide plus rien : c'est la
+        passerelle qui dimensionne.
+        """
+        return bool(self.backend.model_overrides)
+
+    def model_for(self, spec: AgentSpec) -> str:
+        return spec.resolve_model(self.profile, self.backend.model_overrides)
+
+    def options_for(self, spec: AgentSpec) -> dict:
+        return spec.resolve_options(self.profile, self.backend.num_ctx_cap)
+
     def describe(self) -> str:
         lines = [
             "## Orchestra",
             "",
-            f"- Materiel : {self.hardware.summary()}",
-            f"- Profil : **{self.profile.id}** ({self.profile.label}) — {self.profile_reason}",
-            f"- Contexte max : {self.profile.num_ctx} tokens",
-            f"- Serveur Ollama : {self.client.host}",
+            f"- Backend : **{self.backend.describe()}**"
+            + (f" - {self.backend_reason}" if self.backend_reason else ""),
+            f"- Materiel local : {self.hardware.summary()}",
+        ]
+
+        if self.remote_models:
+            lines.append(
+                f"- Profil : **{self.profile.id}** (ignore - les modeles sont "
+                "imposes par le backend distant)"
+            )
+        else:
+            lines.append(
+                f"- Profil : **{self.profile.id}** ({self.profile.label}) - "
+                f"{self.profile_reason}"
+            )
+
+        cap = self.backend.num_ctx_cap or self.profile.num_ctx
+        lines += [
+            f"- Contexte max : {cap} tokens",
             "",
             "| Agent | Classe | Modele resolu | Taches | Role |",
             "|---|---|---|---|---|",
         ]
         for spec in self.agents.values():
             lines.append(
-                f"| `{spec.name}` | {spec.model_class} | "
-                f"`{spec.resolve_model(self.profile)}` | "
-                f"{', '.join(spec.tasks) or '—'} | {spec.description or spec.label} |"
+                f"| `{spec.name}` | {spec.model_class} | `{self.model_for(spec)}` | "
+                f"{', '.join(spec.tasks) or '-'} | {spec.description or spec.label} |"
             )
         return "\n".join(lines)
 
     def required_models(self) -> list[str]:
-        return sorted({s.resolve_model(self.profile) for s in self.agents.values()})
+        return sorted({self.model_for(spec) for spec in self.agents.values()})
 
     async def health(self) -> str:
         try:
-            version = await self.client.ping()
-        except OllamaUnavailable as exc:
+            version = await self.backend.ping()
+        except BackendUnavailable as exc:
             return f"❌ {exc}"
 
-        installed = set(await self.client.list_models())
-        lines = [f"✅ Ollama {version} sur {self.client.host}", ""]
+        lines = [f"✅ {self.backend.name} joignable sur {self.backend.base_url} ({version})", ""]
+
+        try:
+            published = set(await self.backend.list_models())
+        except BackendUnavailable as exc:
+            lines.append(f"⚠️ Inventaire des modeles indisponible : {exc}")
+            return "\n".join(lines)
+
+        if not published:
+            # Certaines passerelles ne publient pas leur catalogue ; l'absence
+            # d'inventaire n'est pas une erreur.
+            lines.append(
+                "⚠️ Le backend ne publie pas de catalogue : impossible de "
+                "verifier la presence des modeles a l'avance."
+            )
+            return "\n".join(lines)
+
         missing = []
         for model in self.required_models():
-            # Ollama expose "name:tag" ; un modele sans tag explicite est ":latest".
-            present = model in installed or f"{model}:latest" in installed
+            # Un modele sans tag explicite vaut ":latest" cote Ollama.
+            present = model in published or f"{model}:latest" in published
             lines.append(f"{'✅' if present else '❌'} {model}")
             if not present:
                 missing.append(model)
 
         if missing:
-            lines += [
-                "",
-                "Modeles manquants. Installe-les avec :",
-                "```",
-                *[f"ollama pull {m}" for m in missing],
-                "```",
-            ]
+            if self.backend.supports_pull:
+                lines += [
+                    "",
+                    "Modeles manquants. Installe-les avec :",
+                    "```",
+                    *[f"ollama pull {m}" for m in missing],
+                    "```",
+                ]
+            else:
+                lines += [
+                    "",
+                    "Modeles manquants sur la passerelle. Verifie les noms "
+                    "declares sous `models:` pour ce backend dans "
+                    "config/backends.yaml.",
+                ]
         return "\n".join(lines)
 
     # --------------------------------------------------------------- execution
@@ -134,7 +196,7 @@ class Orchestra:
         routing: RoutingDecision | None = None,
     ) -> AgentRun:
         spec = self.get(agent_name)
-        model = spec.resolve_model(self.profile)
+        model = self.model_for(spec)
 
         user_content = prompt
         if context:
@@ -145,13 +207,13 @@ class Orchestra:
                 "--- FIN DU CONTEXTE ---"
             )
 
-        result = await self.client.chat(
+        result = await self.backend.chat(
             model,
             [
                 {"role": "system", "content": spec.system},
                 {"role": "user", "content": user_content},
             ],
-            options=spec.resolve_options(self.profile),
+            options=self.options_for(spec),
             fmt=spec.output_format,
         )
         return AgentRun(
@@ -181,8 +243,8 @@ class Orchestra:
         if triage is not None and best.name != TRIAGE_AGENT:
             candidates = {n: s for n, s in self.agents.items() if n != TRIAGE_AGENT}
             try:
-                result = await self.client.chat(
-                    triage.resolve_model(self.profile),
+                result = await self.backend.chat(
+                    self.model_for(triage),
                     [
                         {"role": "system", "content": triage.system},
                         {
@@ -192,7 +254,7 @@ class Orchestra:
                             ),
                         },
                     ],
-                    options=triage.resolve_options(self.profile),
+                    options=self.options_for(triage),
                     fmt="json",
                 )
                 parsed = parse_triage_response(result.content, candidates)
@@ -205,7 +267,7 @@ class Orchestra:
                         reason=reason,
                         runners_up=runners_up,
                     )
-            except OllamaUnavailable:
+            except BackendUnavailable:
                 pass  # on retombe sur le score deterministe
 
         return RoutingDecision(
