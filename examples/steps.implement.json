@@ -1,0 +1,14 @@
+[
+  {
+    "agent": "implementer",
+    "instruction": "Implemente la specification fournie en entree."
+  },
+  {
+    "agent": "reviewer",
+    "instruction": "Relis le code produit a l'etape precedente."
+  },
+  {
+    "agent": "documenter",
+    "instruction": "Redige les docstrings du code, en tenant compte des remarques de la revue."
+  }
+]

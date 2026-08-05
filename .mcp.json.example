@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "orchestra": {
+      "command": "C:/CHEMIN/VERS/orchestra/.venv/Scripts/python.exe",
+      "args": ["-m", "orchestra.mcp_server"],
+      "cwd": "C:/CHEMIN/VERS/orchestra",
+      "env": {
+        "OLLAMA_HOST": "http://127.0.0.1:11434"
+      }
+    }
+  }
+}

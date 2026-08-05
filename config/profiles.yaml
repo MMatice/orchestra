@@ -1,0 +1,77 @@
+# Profils materiels.
+#
+# Un agent ne nomme jamais un modele : il declare une CLASSE de modele
+# (fast / code / reason). Ce fichier fait la traduction classe -> modele reel
+# en fonction de la memoire disponible. Le meme dossier agents/ tourne donc
+# sur un laptop 8 Go comme sur un serveur 48 Go, sans rien modifier.
+#
+# Selection : on prend le profil de plus grand `min_usable_gb` inferieur ou
+# egal au budget memoire detecte. Forcable via ORCHESTRA_PROFILE=<id>.
+#
+# Classes :
+#   fast   -> triage, classification, routage. Doit repondre en < 2 s.
+#   code   -> implementation, review, tests. Modele specialise code.
+#   reason -> explication, documentation, architecture. Modele generaliste.
+
+profiles:
+  cpu:
+    label: "CPU seul"
+    min_usable_gb: 0
+    num_ctx: 4096
+    parallel_agents: 1
+    models:
+      fast: "qwen2.5-coder:1.5b"
+      code: "qwen2.5-coder:3b"
+      reason: "llama3.2:3b"
+
+  xs:
+    label: "GPU d'entree (4-6 Go)"
+    min_usable_gb: 3.5
+    num_ctx: 4096
+    parallel_agents: 1
+    models:
+      fast: "qwen2.5-coder:1.5b"
+      code: "qwen2.5-coder:7b"
+      reason: "hermes3:3b"
+
+  sm:
+    label: "GPU grand public (8-11 Go)"
+    min_usable_gb: 6.5
+    num_ctx: 8192
+    parallel_agents: 1
+    models:
+      fast: "qwen2.5-coder:1.5b"
+      code: "qwen2.5-coder:7b"
+      reason: "hermes3:8b"
+
+  md:
+    label: "GPU haut de gamme (12-20 Go)"
+    min_usable_gb: 11.0
+    num_ctx: 16384
+    parallel_agents: 2
+    models:
+      fast: "qwen2.5-coder:3b"
+      code: "qwen2.5-coder:14b"
+      reason: "hermes3:8b"
+
+  lg:
+    label: "Station de travail / GPU pro (24-40 Go)"
+    min_usable_gb: 21.0
+    num_ctx: 32768
+    parallel_agents: 3
+    models:
+      fast: "qwen2.5-coder:3b"
+      code: "qwen2.5-coder:32b"
+      reason: "qwen2.5:32b"
+
+  xl:
+    label: "Serveur d'inference (48 Go et plus)"
+    # 48 Go de VRAM brute donnent ~43 Go de budget apres marge : le seuil est
+    # cale juste en dessous pour qu'un bi-GPU 2x24 Go bascule bien ici.
+    min_usable_gb: 42.0
+    num_ctx: 65536
+    parallel_agents: 6
+    models:
+      fast: "qwen2.5-coder:7b"
+      code: "qwen2.5-coder:32b"
+      reason: "hermes3:70b"

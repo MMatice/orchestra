@@ -1,0 +1,7 @@
+# Normalisation des fins de ligne : LF dans le depot, quel que soit l'OS.
+* text=auto eol=lf
+
+# Sauf les scripts Windows, qui restent en CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

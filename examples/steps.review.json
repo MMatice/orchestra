@@ -1,0 +1,10 @@
+[
+  {
+    "agent": "reviewer",
+    "instruction": "Relis le fichier fourni et liste les problemes par gravite."
+  },
+  {
+    "agent": "tester",
+    "instruction": "Ecris des tests qui reproduisent les problemes BLOCKER et MAJOR remontes par la revue."
+  }
+]
