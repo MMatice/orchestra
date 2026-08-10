@@ -22,6 +22,8 @@ from .backends import BackendUnavailable
 from .console import force_utf8_output
 from .pipeline import parse_steps, run_pipeline, run_refine_loop
 from .registry import AgentNotFound, Orchestra
+from .tools import describe_catalogue
+from .workspace import Workspace, WorkspaceError
 
 mcp = _Server("orchestra")
 
@@ -36,53 +38,56 @@ def get_orchestra() -> Orchestra:
 
 
 def _guard(exc: Exception) -> str:
-    if isinstance(exc, (AgentNotFound, BackendUnavailable)):
+    if isinstance(exc, (AgentNotFound, BackendUnavailable, WorkspaceError)):
         return f"❌ {exc}"
     return f"❌ {type(exc).__name__}: {exc}"
 
 
 @mcp.tool()
 async def orchestra_status() -> str:
-    """Inventaire des agents, backend d'inference actif et etat du service.
+    """Inventaire des agents, de leurs privileges, et etat du backend.
 
-    A appeler en premier dans une session pour savoir ce qui est disponible.
+    A appeler en premier dans une session : indique quels agents savent agir
+    sur des fichiers et lesquels se contentent de produire du texte.
     """
     try:
         orch = get_orchestra()
-        return f"{orch.describe()}\n\n### Etat\n\n{await orch.health()}"
+        return (
+            f"{orch.describe()}\n\n"
+            f"### Outils\n\n{describe_catalogue()}\n\n"
+            f"### Etat\n\n{await orch.health()}"
+        )
     except Exception as exc:  # noqa: BLE001
         return _guard(exc)
 
 
 @mcp.tool()
-async def ask_agent(agent: str, prompt: str, context: str = "") -> str:
-    """Envoie une tache a un agent local precis.
+async def ask_agent(
+    agent: str,
+    prompt: str,
+    context: str = "",
+    workspace: str = "",
+    allow_writes: bool = False,
+) -> str:
+    """Envoie une tache a un agent precis, qui peut travailler sur des fichiers.
 
     Args:
-        agent: nom de l'agent (voir orchestra_status), ex. "reviewer", "explainer".
+        agent: nom de l'agent (voir orchestra_status), ex. "reviewer", "implementer".
         prompt: l'instruction a executer.
-        context: code, diff ou logs sur lesquels l'agent doit travailler.
+        context: code, diff ou logs a joindre. Inutile de coller un fichier que
+            l'agent peut lire lui-meme quand workspace est fourni.
+        workspace: repertoire racine sur lequel l'agent travaille. Sans lui,
+            l'agent n'a aucun outil et se contente de produire du texte.
+        allow_writes: autorise l'agent a creer et modifier des fichiers. Second
+            verrou, independant des outils declares par l'agent : les deux sont
+            necessaires pour qu'une ecriture ait lieu.
     """
     try:
-        run = await get_orchestra().run(agent, prompt, context=context or None)
-        return run.as_markdown()
-    except Exception as exc:  # noqa: BLE001
-        return _guard(exc)
-
-
-@mcp.tool()
-async def delegate(prompt: str, task_type: str = "", context: str = "") -> str:
-    """Delegue une tache sans choisir l'agent : le routeur selectionne le mieux place.
-
-    Args:
-        prompt: l'instruction a executer.
-        task_type: indice de routage optionnel (review, explain, test, document,
-            implement, summarize). Ameliore nettement la precision du routage.
-        context: code, diff ou logs a joindre.
-    """
-    try:
-        run = await get_orchestra().delegate(
-            prompt, task_type=task_type or None, context=context or None
+        run = await get_orchestra().run(
+            agent,
+            prompt,
+            context=context or None,
+            workspace=Workspace.open(workspace, writable=allow_writes),
         )
         return run.as_markdown()
     except Exception as exc:  # noqa: BLE001
@@ -90,7 +95,42 @@ async def delegate(prompt: str, task_type: str = "", context: str = "") -> str:
 
 
 @mcp.tool()
-async def pipeline(steps: str, initial_input: str = "") -> str:
+async def delegate(
+    prompt: str,
+    task_type: str = "",
+    context: str = "",
+    workspace: str = "",
+    allow_writes: bool = False,
+) -> str:
+    """Delegue une tache sans choisir l'agent : le routeur selectionne le mieux place.
+
+    Args:
+        prompt: l'instruction a executer.
+        task_type: indice de routage optionnel (review, explain, test, document,
+            implement, summarize). Ameliore nettement la precision du routage.
+        context: code, diff ou logs a joindre.
+        workspace: repertoire racine sur lequel l'agent travaille.
+        allow_writes: autorise la modification de fichiers.
+    """
+    try:
+        run = await get_orchestra().delegate(
+            prompt,
+            task_type=task_type or None,
+            context=context or None,
+            workspace=Workspace.open(workspace, writable=allow_writes),
+        )
+        return run.as_markdown()
+    except Exception as exc:  # noqa: BLE001
+        return _guard(exc)
+
+
+@mcp.tool()
+async def pipeline(
+    steps: str,
+    initial_input: str = "",
+    workspace: str = "",
+    allow_writes: bool = False,
+) -> str:
     """Enchaine plusieurs agents, la sortie de chacun alimentant le suivant.
 
     Args:
@@ -99,6 +139,8 @@ async def pipeline(steps: str, initial_input: str = "") -> str:
             [{"agent":"implementer","instruction":"Ecris la fonction"},
              {"agent":"reviewer","instruction":"Relis le code produit"}]
         initial_input: donnee de depart (code, spec, logs) commune aux etapes.
+        workspace: repertoire racine commun a toutes les etapes.
+        allow_writes: autorise la modification de fichiers.
     """
     try:
         parsed = json.loads(steps)
@@ -109,7 +151,10 @@ async def pipeline(steps: str, initial_input: str = "") -> str:
 
     try:
         result = await run_pipeline(
-            get_orchestra(), parse_steps(parsed), initial_input
+            get_orchestra(),
+            parse_steps(parsed),
+            initial_input,
+            workspace=Workspace.open(workspace, writable=allow_writes),
         )
         return result.as_markdown()
     except Exception as exc:  # noqa: BLE001
@@ -118,23 +163,36 @@ async def pipeline(steps: str, initial_input: str = "") -> str:
 
 @mcp.tool()
 async def refine(
-    task: str, producer: str = "implementer", critic: str = "reviewer", max_rounds: int = 2
+    task: str,
+    producer: str = "implementer",
+    critic: str = "reviewer",
+    max_rounds: int = 2,
+    workspace: str = "",
+    allow_writes: bool = False,
 ) -> str:
     """Boucle producteur/critique : un agent produit, un autre critique, le premier corrige.
 
-    Utile pour faire converger un livrable localement avant de le remonter,
-    sans consommer de tokens cote API.
+    Avec un workspace, le producteur ecrit sur le disque et le critique relit
+    les fichiers reels : les deux agents voient le meme etat, et le livrable
+    ne transite plus par le contexte a chaque tour.
 
     Args:
         task: la tache a realiser.
         producer: agent qui produit (defaut "implementer").
         critic: agent qui critique (defaut "reviewer").
         max_rounds: nombre max de cycles critique/correction (1 a 4).
+        workspace: repertoire racine sur lequel les deux agents travaillent.
+        allow_writes: autorise la modification de fichiers.
     """
     try:
         rounds = max(1, min(int(max_rounds), 4))
         result = await run_refine_loop(
-            get_orchestra(), producer, critic, task, max_rounds=rounds
+            get_orchestra(),
+            producer,
+            critic,
+            task,
+            max_rounds=rounds,
+            workspace=Workspace.open(workspace, writable=allow_writes),
         )
         return result.as_markdown()
     except Exception as exc:  # noqa: BLE001

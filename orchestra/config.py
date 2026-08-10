@@ -4,7 +4,14 @@ Un agent est une COUCHE DE CONFIGURATION, pas un modele. Il porte :
   - un role et un system prompt metier,
   - une classe de modele (fast / code / reason) resolue par le profil materiel,
   - des parametres d'inference,
-  - des metadonnees de routage (tasks, keywords).
+  - des metadonnees de routage (tasks, keywords),
+  - les outils qui lui sont accordes, donc ses privileges reels.
+
+La cle `tools` decide de la nature de l'agent. Sans elle, l'agent produit du
+texte en un aller-retour. Avec elle, il entre dans une boucle ou il lit et
+modifie l'arborescence. Les privileges se lisent donc dans le YAML, agent par
+agent : un `reviewer` qui n'a que des outils de lecture ne peut pas ecrire,
+quoi que son modele decide.
 
 Modifier un agent = editer son YAML. Aucun modele n'est recree, aucun poids
 n'est duplique : tous les agents d'une meme classe partagent le meme modele
@@ -19,7 +26,9 @@ from typing import Any
 
 import yaml
 
+from .agent_loop import DEFAULT_MAX_TURNS, MAX_TURNS_CAP
 from .profiles import MODEL_CLASSES, Profile
+from .tools import TOOLS, validate_tool_names
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_DIR = PROJECT_ROOT / "agents"
@@ -40,7 +49,20 @@ class AgentSpec:
     num_ctx: int | None = None
     pinned_model: str | None = None
     output_format: str | None = None
+    #: outils accordes. Vide = agent de generation pure, un seul aller-retour.
+    tools: list[str] = field(default_factory=list)
+    #: budget de tours de la boucle outillee
+    max_turns: int = DEFAULT_MAX_TURNS
     source_path: Path | None = None
+
+    @property
+    def is_agentic(self) -> bool:
+        """L'agent peut-il agir, ou seulement produire du texte ?"""
+        return bool(self.tools)
+
+    @property
+    def writes(self) -> bool:
+        return any(TOOLS[name].writes for name in self.tools if name in TOOLS)
 
     def resolve_model(
         self, profile: Profile, model_overrides: dict[str, str] | None = None
@@ -93,6 +115,17 @@ class AgentSpec:
                 "ou etre absent"
             )
 
+        tools = [str(t).strip() for t in data.get("tools", []) if str(t).strip()]
+        validate_tool_names(tools, where=f" pour l'agent '{data['name']}'{where}")
+
+        if tools and fmt == "json":
+            # Les deux contraignent la sortie du modele et s'excluent : un
+            # agent qui doit rendre du JSON strict ne peut pas appeler d'outil.
+            raise ValueError(
+                f"Agent '{data['name']}'{where} : 'tools' et output_format "
+                "'json' sont incompatibles"
+            )
+
         return cls(
             name=str(data["name"]).strip(),
             label=str(data.get("label") or data["name"]).strip(),
@@ -109,6 +142,10 @@ class AgentSpec:
                 str(data["pinned_model"]).strip() if data.get("pinned_model") else None
             ),
             output_format=fmt,
+            tools=tools,
+            max_turns=max(
+                1, min(int(data.get("max_turns", DEFAULT_MAX_TURNS)), MAX_TURNS_CAP)
+            ),
             source_path=source,
         )
 

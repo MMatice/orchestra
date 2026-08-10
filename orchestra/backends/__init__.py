@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from .base import Backend, BackendUnavailable, ChatResult
+from .base import Backend, BackendUnavailable, ChatResult, ToolCall
 from .ollama import OllamaBackend, normalize_base_url
 from .openai_compat import OpenAICompatBackend
 
@@ -25,6 +25,7 @@ __all__ = [
     "ChatResult",
     "OllamaBackend",
     "OpenAICompatBackend",
+    "ToolCall",
     "create_backend",
     "load_backend_config",
     "normalize_base_url",

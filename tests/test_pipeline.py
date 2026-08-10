@@ -7,6 +7,7 @@ from orchestra.pipeline import (
     run_refine_loop,
 )
 from orchestra.registry import AgentRun
+from orchestra.workspace import Workspace
 
 
 class FakeOrchestra:
@@ -16,8 +17,15 @@ class FakeOrchestra:
         self.calls = []
         self.responses = list(responses or [])
 
-    async def run(self, agent, prompt, *, context=None, routing=None):
-        self.calls.append({"agent": agent, "prompt": prompt, "context": context})
+    async def run(self, agent, prompt, *, context=None, routing=None, workspace=None):
+        self.calls.append(
+            {
+                "agent": agent,
+                "prompt": prompt,
+                "context": context,
+                "workspace": workspace,
+            }
+        )
         content = self.responses.pop(0) if self.responses else f"sortie de {agent}"
         return AgentRun(agent=agent, model="fake", content=content, stats="fake")
 
@@ -84,6 +92,48 @@ async def test_refine_loop_respects_max_rounds():
 
     # 1 production initiale + 2 * (critique + correction)
     assert len(fake.calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_workspace_reaches_every_step(tmp_path):
+    """Un espace de travail passe au pipeline doit atteindre chaque agent.
+
+    Sans cela, une etape retomberait silencieusement en generation de texte au
+    milieu d'une chaine censee modifier des fichiers.
+    """
+    fake = FakeOrchestra(["a", "b"])
+    workspace = Workspace(tmp_path, writable=True)
+
+    await run_pipeline(
+        fake,
+        [PipelineStep("implementer", "x"), PipelineStep("reviewer", "y")],
+        "entree",
+        workspace=workspace,
+    )
+
+    assert [c["workspace"] for c in fake.calls] == [workspace, workspace]
+
+
+@pytest.mark.asyncio
+async def test_refine_on_disk_asks_the_critic_to_open_the_files(tmp_path):
+    """Avec un espace de travail, le livrable ne transite plus par le contexte."""
+    fake = FakeOrchestra(["ecrit dans parser.py", "BLOCKER: manque un cas", "corrige"])
+
+    await run_refine_loop(
+        fake,
+        "implementer",
+        "reviewer",
+        "tache",
+        max_rounds=1,
+        workspace=Workspace(tmp_path, writable=True),
+    )
+
+    review = fake.calls[1]
+    assert "ouvrant toi-meme les fichiers" in review["prompt"]
+    # Le correcteur recoit la critique, pas une recopie de la version courante.
+    fix = fake.calls[2]
+    assert "manque un cas" in fix["context"]
+    assert "Version actuelle" not in fix["context"]
 
 
 def test_parse_steps_rejects_malformed_input():

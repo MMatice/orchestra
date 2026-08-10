@@ -58,3 +58,60 @@ def test_missing_system_prompt_is_rejected():
 def test_invalid_output_format_is_rejected():
     with pytest.raises(ValueError, match="output_format"):
         _spec(output_format="xml")
+
+
+# ------------------------------------------------------------------ outils
+
+
+def test_unknown_tool_is_rejected_at_load():
+    """Une faute de frappe dans un YAML doit se voir au demarrage.
+
+    Decouvrir l'outil manquant au milieu d'une boucle facturee est le pire
+    moment pour l'apprendre.
+    """
+    with pytest.raises(ValueError, match="Outil"):
+        _spec(tools=["read_file", "delete_everything"])
+
+
+def test_json_output_and_tools_are_incompatible():
+    # Les deux contraignent la sortie du modele : les cumuler donne un agent
+    # qui n'appelle jamais d'outil, silencieusement.
+    with pytest.raises(ValueError, match="incompatibles"):
+        _spec(tools=["read_file"], output_format="json")
+
+
+def test_privileges_are_readable_from_the_spec():
+    assert not _spec().is_agentic
+    assert not _spec(tools=["read_file"]).writes
+    assert _spec(tools=["read_file", "edit_file"]).writes
+
+
+def test_max_turns_is_clamped():
+    assert _spec(max_turns=999).max_turns <= 25
+    assert _spec(max_turns=0).max_turns == 1
+
+
+def test_shipped_reviewer_cannot_write():
+    """Le critique doit rester un contre-pouvoir dans la boucle refine.
+
+    S'il peut corriger lui-meme, il valide son propre travail au tour suivant.
+    """
+    agents = load_agents()
+    assert agents["reviewer"].is_agentic
+    assert not agents["reviewer"].writes
+    assert not agents["explainer"].writes
+    assert not agents["summarizer"].writes
+
+
+def test_shipped_implementer_can_write():
+    agents = load_agents()
+    assert agents["implementer"].writes
+    assert "edit_file" in agents["implementer"].tools
+
+
+def test_triage_stays_a_pure_json_classifier():
+    # Il arbitre le routage : lui donner des outils le ferait sortir de son role
+    # et casserait la contrainte JSON dont depend le parsing.
+    triage = load_agents()["triage"]
+    assert triage.tools == []
+    assert triage.output_format == "json"

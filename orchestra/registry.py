@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .agent_loop import run_agent_loop
 from .backends import Backend, BackendUnavailable, create_backend
 from .config import AgentSpec, load_agents
 from .env import load_dotenv
 from .hardware import Hardware
 from .profiles import Profile, select_profile
+from .tools import build_toolset
+from .workspace import Workspace
 from .router import (
     AMBIGUITY_THRESHOLD,
     RoutingDecision,
@@ -30,12 +33,26 @@ class AgentRun:
     content: str
     stats: str
     routing: RoutingDecision | None = None
+    #: journal des outils appeles, vide pour un agent de generation pure
+    trace: str = ""
+    #: fichiers reellement ecrits ou modifies
+    changed: list[str] = field(default_factory=list)
 
     def as_markdown(self) -> str:
         header = f"### {self.agent}"
         if self.routing:
             header += f"  _(routage: {self.routing.method} - {self.routing.reason})_"
-        return f"{header}\n\n{self.content}\n\n---\n`{self.stats}`"
+
+        blocks = [header, "", self.content]
+        if self.trace:
+            blocks += ["", self.trace]
+        if self.changed:
+            blocks += [
+                "",
+                "**Fichiers modifies** : " + ", ".join(f"`{p}`" for p in self.changed),
+            ]
+        blocks += ["", "---", f"`{self.stats}`"]
+        return "\n".join(blocks)
 
 
 class AgentNotFound(KeyError):
@@ -123,14 +140,28 @@ class Orchestra:
         lines += [
             f"- Contexte max : {cap} tokens",
             "",
-            "| Agent | Classe | Modele resolu | Taches | Role |",
-            "|---|---|---|---|---|",
+            "| Agent | Classe | Modele resolu | Acces | Outils | Role |",
+            "|---|---|---|---|---|---|",
         ]
         for spec in self.agents.values():
+            if not spec.is_agentic:
+                access = "texte"
+            elif spec.writes:
+                access = "**ecriture**"
+            else:
+                access = "lecture"
             lines.append(
                 f"| `{spec.name}` | {spec.model_class} | `{self.model_for(spec)}` | "
-                f"{', '.join(spec.tasks) or '-'} | {spec.description or spec.label} |"
+                f"{access} | {', '.join(spec.tools) or '-'} | "
+                f"{spec.description or spec.label} |"
             )
+
+        lines += [
+            "",
+            "Les agents en ecriture n'agissent que si l'appel fournit un "
+            "`workspace` **et** `allow_writes=true`. Sans espace de travail, "
+            "ils retombent en generation de texte.",
+        ]
         return "\n".join(lines)
 
     def required_models(self) -> list[str]:
@@ -194,6 +225,7 @@ class Orchestra:
         *,
         context: str | None = None,
         routing: RoutingDecision | None = None,
+        workspace: Workspace | None = None,
     ) -> AgentRun:
         spec = self.get(agent_name)
         model = self.model_for(spec)
@@ -207,21 +239,47 @@ class Orchestra:
                 "--- FIN DU CONTEXTE ---"
             )
 
-        result = await self.backend.chat(
+        toolset = build_toolset(spec.tools, workspace)
+        system = spec.system
+        if toolset is not None:
+            system = f"{system}\n\n{_tool_briefing(toolset)}"
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+        options = self.options_for(spec)
+
+        if toolset is None:
+            # Agent de generation pure, ou outils inutilisables faute d'espace
+            # de travail : un aller-retour, comportement historique.
+            result = await self.backend.chat(
+                model, messages, options=options, fmt=spec.output_format
+            )
+            return AgentRun(
+                agent=spec.name,
+                model=model,
+                content=result.content,
+                stats=result.stats_line(),
+                routing=routing,
+            )
+
+        loop = await run_agent_loop(
+            self.backend,
             model,
-            [
-                {"role": "system", "content": spec.system},
-                {"role": "user", "content": user_content},
-            ],
-            options=self.options_for(spec),
-            fmt=spec.output_format,
+            messages,
+            toolset,
+            options=options,
+            max_turns=spec.max_turns,
         )
         return AgentRun(
             agent=spec.name,
             model=model,
-            content=result.content,
-            stats=result.stats_line(),
+            content=loop.content,
+            stats=loop.stats,
             routing=routing,
+            trace=loop.trace(),
+            changed=sorted({str(i.arguments.get("path", "?")) for i in loop.writes}),
         )
 
     async def route(self, task_type: str | None, prompt: str) -> RoutingDecision:
@@ -279,9 +337,45 @@ class Orchestra:
         )
 
     async def delegate(
-        self, prompt: str, *, task_type: str | None = None, context: str | None = None
+        self,
+        prompt: str,
+        *,
+        task_type: str | None = None,
+        context: str | None = None,
+        workspace: Workspace | None = None,
     ) -> AgentRun:
         decision = await self.route(task_type, prompt)
         return await self.run(
-            decision.agent, prompt, context=context, routing=decision
+            decision.agent,
+            prompt,
+            context=context,
+            routing=decision,
+            workspace=workspace,
         )
+
+
+def _tool_briefing(toolset) -> str:
+    """Instructions ajoutees au system prompt quand l'agent est outille.
+
+    Le prompt metier de l'agent decrit son role ; ce bloc decrit son
+    environnement. Les separer evite de dupliquer les memes consignes
+    d'outillage dans chaque fichier YAML.
+    """
+    return (
+        "ENVIRONNEMENT\n"
+        f"Tu travailles dans l'arborescence : {toolset.workspace.describe()}\n"
+        "Tu disposes d'outils qui agissent reellement sur ces fichiers.\n"
+        "\n"
+        "Methode :\n"
+        "- Explore avant d'agir : list_files ou search_files pour situer, "
+        "read_file avant toute modification.\n"
+        "- Les chemins sont relatifs a la racine. Les chemins absolus sont refuses.\n"
+        "- Modifie avec edit_file, qui exige le texte exact deja present. "
+        "write_file ecrase tout le fichier : reserve-le aux creations.\n"
+        "- Un outil qui echoue te renvoie la raison. Lis-la et corrige ton appel "
+        "plutot que de repeter le meme.\n"
+        "- Applique les changements toi-meme. Ne rends pas du code en te "
+        "contentant de demander a l'utilisateur de le recopier.\n"
+        "- Quand c'est fait, conclus en une ou deux phrases : ce que tu as "
+        "change, et ou. Ne recopie pas le contenu des fichiers ecrits."
+    )

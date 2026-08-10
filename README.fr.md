@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)](https://modelcontextprotocol.io/)
 [![Infrastructure](https://img.shields.io/badge/infrastructure-tout%20endpoint%20OpenAI--compatible-2088FF)](#infrastructure)
-[![Tests](https://img.shields.io/badge/tests-54%20passed-3FB950)](#tests)
+[![Tests](https://img.shields.io/badge/tests-119%20passed-3FB950)](#tests)
 [![License](https://img.shields.io/badge/license-MIT-3FB950)](LICENSE)
 
 [English](README.md) · **Français**
@@ -21,6 +21,13 @@ Orchestra expose un banc d'agents spécialisés comme outils MCP, exécutés sur
 l'orchestrateur : il garde la vision d'ensemble, décide quoi déléguer et à qui,
 et vérifie ce qui revient. Le travail mécanique descend d'un étage : expliquer
 une fonction, relire un diff, écrire des tests évidents, condenser des logs.
+
+Ces agents agissent sur des fichiers. Avec un espace de travail, un agent
+explore l'arborescence, lit ce dont il a besoin et applique lui-même ses
+modifications, dans une boucle où il observe le résultat de chaque action. Il ne
+rend pas un bloc de code à recopier. Ce qu'il a le droit de faire se déclare
+agent par agent : le reviewer lit, l'implementer écrit, et aucun des deux ne
+sort du répertoire que vous avez désigné.
 
 Tout endpoint OpenAI-compatible convient, ce qui en pratique les couvre tous :
 une passerelle LiteLLM, un cluster vLLM ou TGI, Azure OpenAI, un proxy interne,
@@ -46,6 +53,7 @@ Trois propriétés en découlent, par ordre d'importance pratique :
 
 - [Comment ça marche](#comment-ça-marche)
 - [Infrastructure](#infrastructure)
+- [Outils et privilèges](#outils-et-privilèges)
 - [Installation](#installation)
 - [Utilisation depuis Claude Code](#utilisation-depuis-claude-code)
 - [Ligne de commande](#ligne-de-commande)
@@ -87,8 +95,13 @@ flowchart TB
     B --> B3[(Azure / hébergé)]
     B --> B4[(Ollama, local)]
 
+    A <-->|appels d'outils| W[Espace de travail<br/>racine confinée]
+    W --> W1[lire · chercher · lister]
+    W --> W2[écrire · éditer]
+
     style C fill:#D97757,color:#fff
     style O fill:#6E56CF,color:#fff
+    style W fill:#3FB950,color:#fff
 ```
 
 **Un agent ne nomme jamais un modèle.** Il déclare une classe, `fast`, `code` ou
@@ -111,12 +124,38 @@ l'agent déclarant `review` plutôt que celui déclarant `code`. Seules les dema
 réellement ambiguës basculent vers un arbitrage par le petit modèle `fast`,
 contraint en JSON, et un nom d'agent halluciné est rejeté plutôt que suivi.
 
+**Les agents agissent, ils ne décrivent pas.** Un agent doté d'outils tourne en
+boucle : il appelle un outil, en voit le résultat réel, et enchaîne, jusqu'à
+avoir terminé ou épuisé son budget de tours. Un outil qui échoue lui renvoie la
+raison au lieu d'interrompre la tâche, ce qui lui permet de corriger son propre
+appel plutôt que d'abandonner. Chaque exécution rapporte ce qui a réellement été
+touché : l'orchestrateur vérifie au lieu de faire confiance.
+
+**Les privilèges sont de la configuration, pas du prompt.** Un agent dispose des
+outils que son YAML lui accorde, et d'aucun autre. Le reviewer est délibérément
+en lecture seule : un critique capable de réécrire le code cesse d'être un
+contre-pouvoir dans la boucle refine. Écrire demande deux clés indépendantes,
+l'agent qui porte des outils d'écriture et l'appelant qui passe `allow_writes` :
+une délégation ne peut donc pas modifier des fichiers par accident.
+
+**L'espace de travail est une frontière, pas une convention.** Tout chemin
+produit par un modèle est résolu contre une racine unique et refusé s'il en
+sort, que ce soit par `..`, par un chemin absolu ou par un lien symbolique. Les
+fichiers porteurs de secrets ne sont pas seulement refusés, ils sont invisibles :
+`.env`, `.git`, `.ssh`, `.pem` et leurs semblables sont absents des listings et
+des recherches. Cela compte parce que tout ce qu'un agent lit part dans le
+contexte du modèle qui le pilote, donc hors de votre réseau chez un fournisseur
+hébergé.
+
 **Les agents peuvent se piloter entre eux.** `pipeline` les enchaîne, la sortie
 de chacun alimentant le contexte du suivant. `refine` exécute une boucle
 producteur/critique où un agent produit, un autre critique, et le premier
 corrige, jusqu'à ce que le critique réponde `VALIDATED` ou que les tours soient
-épuisés. Un livrable peut donc converger sur votre propre infrastructure avant
-d'atteindre Claude.
+épuisés. Avec un espace de travail, la boucle change de nature : le producteur
+écrit sur le disque et le critique relit les fichiers réels, donc les deux voient
+le même état et le livrable ne transite plus par le contexte à chaque tour. Un
+livrable peut donc converger sur votre propre infrastructure avant d'atteindre
+Claude.
 
 ---
 
@@ -247,17 +286,30 @@ Cinq outils sont exposés :
 | `pipeline` | Enchaîne les agents, sortie vers contexte du suivant |
 | `refine` | Boucle producteur/critique jusqu'à validation |
 
+Chaque outil prend deux arguments qui décident de ce que les agents peuvent
+faire :
+
+| Argument | Effet |
+|---|---|
+| `workspace` | Répertoire racine sur lequel les agents travaillent. Sans lui, ils n'ont aucun outil et se contentent de produire du texte. |
+| `allow_writes` | Les autorise à créer et modifier des fichiers. Sans lui, ils lisent, explorent et rapportent. |
+
 En pratique, la délégation se demande en langage naturel :
 
 > « Fais condenser ces 4000 lignes de logs par l'agent local avant de les lire. »
 >
 > « Passe ce diff à l'agent reviewer, en premier filtre avant ta relecture. »
 >
-> « Fais écrire les tests par les agents, avec une boucle de review. »
+> « Fais ajouter la gestion d'erreur manquante dans `src/parser.py` par l'agent
+> implementer, puis fais-la vérifier par le reviewer. »
+
+Claude transmet le répertoire de travail comme `workspace` et positionne
+`allow_writes` quand la demande implique des modifications sur le disque.
 
 ### Chaînage
 
-`pipeline` prend une séquence explicite :
+`pipeline` prend une séquence explicite, et toutes les étapes partagent le même
+espace de travail :
 
 ```json
 [
@@ -277,12 +329,24 @@ Orchestra s'utilise aussi sans Claude Code :
 python -m orchestra.cli status                                    # backend, modèles, santé
 python -m orchestra.cli backends                                  # endpoints configurés
 python -m orchestra.cli agents                                    # liste compacte
-python -m orchestra.cli ask reviewer "Relis ce module" --file app.py
+python -m orchestra.cli tools                                     # catalogue des outils
+
+# Lecture seule : l'agent explore l'arborescence et rapporte.
+python -m orchestra.cli ask reviewer "Relis le module de parsing" --workspace .
+
+# Lecture/écriture : l'agent applique lui-même ses modifications.
+python -m orchestra.cli ask implementer "Ajoute la gestion des offsets" --workspace . --write
+
 python -m orchestra.cli delegate "explique cette erreur" --task explain --file trace.log
-python -m orchestra.cli pipeline examples/steps.review.json --input-file app.py
-python -m orchestra.cli refine "Écris un parseur d'ISO-8601 sans dépendance"
+python -m orchestra.cli pipeline examples/steps.review.json --workspace . --write
+python -m orchestra.cli refine "Écris un parseur d'ISO-8601" --workspace . --write
 python -m orchestra.cli pull                                      # backend local uniquement
 ```
+
+`--file` joint un fichier comme contexte, ce qui reste le bon choix pour quelque
+chose d'extérieur à l'espace de travail : un log, un diff. `--workspace` est
+d'une autre nature : il laisse l'agent aller chercher lui-même ce dont il a
+besoin.
 
 ---
 
@@ -302,6 +366,9 @@ keywords: [review, relis, bug, qualite]
 temperature: 0.1
 num_predict: 1800
 
+tools: [list_files, read_file, search_files]   # lecture seule, par conception
+max_turns: 10
+
 system: |
   You are a code reviewer. You report problems; you do not rewrite the file.
   ...
@@ -312,13 +379,41 @@ system: |
 | `model_class` | **`fast`** triage et résumé · **`code`** implémentation, review, tests · **`reason`** explication, documentation |
 | `tasks` | Types de tâches revendiqués, moteur principal du routage |
 | `keywords` | Mots déclencheurs quand aucun type n'est fourni |
+| `tools` | Outils accordés. Absent = agent textuel, un seul aller-retour |
+| `max_turns` | Budget de tours de la boucle outillée, plafonné à 25 |
 | `temperature` | 0.0-0.15 pour du code, 0.25-0.35 pour de la prose |
 | `num_ctx` | Optionnel, plafonné par le backend ou le profil |
 | `pinned_model` | Optionnel, épingle un modèle et court-circuite la résolution |
-| `output_format` | `json` pour contraindre la sortie |
+| `output_format` | `json` pour contraindre la sortie, incompatible avec `tools` |
 
 Ajouter un agent revient à déposer un YAML dans `agents/`. Rien d'autre à
 modifier, sur n'importe quel backend.
+
+### Outils et privilèges
+
+| Outil | Écrit | Déverrouillage | Rôle |
+|---|---|---|---|
+| `list_files` | non | - | Liste l'arborescence, en sautant caches et répertoires de build |
+| `read_file` | non | - | Lit un fichier entier |
+| `search_files` | non | - | Recherche par expression régulière, avec chemin et numéro de ligne |
+| `write_file` | **oui** | - | Crée ou écrase un fichier |
+| `edit_file` | **oui** | - | Remplace un fragment exact, qui doit être unique |
+| `run_command` | **oui** | `ORCHESTRA_ALLOW_SHELL` | Exécute une commande dans l'espace de travail |
+
+`edit_file` exige le texte exact déjà présent et refuse un fragment ambigu, ce
+qui force l'agent à lire avant d'écrire. C'est cette contrainte qui empêche un
+modèle d'écraser un fichier qu'il n'a jamais ouvert.
+
+`run_command` est verrouillé par défaut et le reste tant que la variable
+d'environnement n'est pas positionnée. Un processus fils sort du confinement
+qu'imposent les outils fichiers : le filtre de motifs qu'il embarque arrête les
+accidents, pas un modèle qui chercherait activement à s'échapper. Déverrouillé,
+c'est ce qui permet à l'agent `tester` d'exécuter la suite qu'il vient d'écrire
+et de corriger ce qui échoue.
+
+En configuration livrée : `reviewer`, `explainer` et `summarizer` sont en lecture
+seule ; `implementer` et `documenter` écrivent ; `tester` reçoit en plus
+`run_command` ; `triage` n'a aucun outil, puisqu'il doit rendre du JSON strict.
 
 ### Variables d'environnement
 
@@ -331,6 +426,8 @@ l'environnement réel.
 | `ORCHESTRA_BACKEND` | `default` de `backends.yaml` | Endpoint actif |
 | `ORCHESTRA_BASE_URL` | définition du backend | Repointer un endpoint sans éditer le YAML |
 | `ORCHESTRA_PROFILE` | détection automatique | Force un profil matériel, backends locaux uniquement |
+| `ORCHESTRA_WORKSPACE` | aucun | Racine par défaut, redéfinissable à chaque appel |
+| `ORCHESTRA_ALLOW_SHELL` | absent | Déverrouille `run_command` |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Serveur Ollama |
 
 ### Profils matériels
@@ -427,14 +524,20 @@ orchestra/
 │   └── profiles.yaml          # classe -> modèle, backends locaux uniquement
 ├── orchestra/
 │   ├── backends/
-│   │   ├── base.py            # contrat commun
+│   │   ├── base.py            # contrat, appels d'outils, repli raisonnement
 │   │   ├── openai_compat.py   # /v1/chat/completions
 │   │   └── ollama.py          # API native Ollama
+│   ├── tools/
+│   │   ├── __init__.py        # catalogue, octroi, exécution
+│   │   ├── files.py           # lire, écrire, éditer, chercher
+│   │   └── shell.py           # run_command, verrouillé par défaut
+│   ├── workspace.py           # frontière de sécurité : confinement + occultation
+│   ├── agent_loop.py          # boucle d'outils, budget de tours, anti-boucle
 │   ├── console.py             # sortie UTF-8 robuste
 │   ├── env.py                 # chargement .env, sans dépendance
 │   ├── hardware.py            # détection GPU / RAM (CUDA, ROCm, Metal, CPU)
 │   ├── profiles.py            # sélection du profil, résolution des classes
-│   ├── config.py              # chargement et validation des agents
+│   ├── config.py              # chargement, validation et privilèges des agents
 │   ├── router.py              # scoring déterministe + triage LLM
 │   ├── registry.py            # cœur : agents + backend + profil
 │   ├── pipeline.py            # chaînage et boucle producteur/critique
@@ -454,11 +557,21 @@ python -m pytest -q
 ```
 
 La suite couvre la sélection de backend, la couche de traduction
-OpenAI-compatible, la sélection de profil et ses contraintes de contexte, la
-validation des agents, les deux étages de routage et le chaînage. Aucun test ne
-fait d'appel réseau : les backends passent par un transport simulé et les
-pipelines par un orchestrateur factice, ce qui garde la suite rapide et
-déterministe.
+OpenAI-compatible, le décodage des appels d'outils dans les deux formes de
+fournisseur, la sélection de profil et ses contraintes de contexte, la
+validation des agents et de leurs privilèges, les deux étages de routage, le
+chaînage, la boucle d'outils et ses garde-fous.
+
+Le confinement est la partie la plus couverte, parce que c'est là qu'un bug
+donne le disque : remontée par `..`, chemins absolus dans les deux grammaires,
+liens symboliques pointant vers l'extérieur et occultation des fichiers de
+secrets ont chacun leur test. La règle voulant que le reviewer livré ne puisse
+pas écrire en a un aussi : un critique capable de corriger le code qu'il vient
+de relire cesse silencieusement d'en être un.
+
+Aucun test ne fait d'appel réseau : les backends passent par un transport
+simulé, la boucle par un backend scripté et les pipelines par un orchestrateur
+factice, ce qui garde la suite rapide et déterministe.
 
 ---
 
@@ -473,8 +586,22 @@ déterministe.
   force un déchargement et un rechargement, soit 5 à 15 s. Une passerelle aux
   modèles résidents n'a pas ce coût, ce qui est une raison de préférer
   l'infrastructure partagée bien avant que l'argument économique n'entre en jeu.
-- **Vérification.** La sortie d'un agent n'est pas une source de vérité. Elle
-  doit passer sous les yeux de Claude ou les vôtres.
+- **Le tool calling est une exigence dure.** Un agent outillé demande un modèle
+  qui sait appeler des fonctions, et qui le fait bien. Les petits modèles
+  appellent le mauvais outil, inventent des arguments, ou répondent en prose
+  quand il fallait agir. Vérifiez `supported_parameters` chez un fournisseur
+  hébergé avant d'épingler un modèle ; en dessous de 7 B environ, n'accordez
+  d'outils qu'aux agents en lecture seule.
+- **Les modèles à raisonnement répondent parfois dans le mauvais champ.**
+  Certains terminent un tour avec un `content` vide et toute leur réponse dans
+  `reasoning`. Orchestra retombe sur ce champ lors d'un tour terminal, donc la
+  génération n'est pas perdue, mais la réponse porte alors le registre de la
+  réflexion brute plutôt que le format demandé par le prompt.
+- **Vérification.** La sortie d'un agent n'est pas une source de vérité, et cela
+  pèse davantage maintenant qu'ils écrivent sur le disque. Lisez le journal
+  d'actions rapporté, et placez l'espace de travail sous contrôle de version :
+  une exécution ratée est alors à un `git diff` d'être comprise et à un
+  `git checkout` d'être annulée.
 - **Spécialisation.** Elle est prompt-level. Un vrai fine-tune (LoRA) irait plus
   loin, au prix d'un dataset et de temps GPU.
 

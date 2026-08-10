@@ -13,10 +13,36 @@ from .base import (
     Backend,
     BackendUnavailable,
     ChatResult,
+    ToolCall,
+    content_or_reasoning,
 )
 
 DEFAULT_PORT = 11434
 DEFAULT_BASE_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
+
+
+def _parse_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
+    """Extrait les appels d'outils d'un message Ollama.
+
+    Deux ecarts avec OpenAI : les arguments arrivent deja desserialises, et il
+    n'y a pas d'identifiant d'appel. On en fabrique un pour que la boucle
+    d'execution reste identique d'un backend a l'autre.
+    """
+    parsed: list[ToolCall] = []
+    for index, call in enumerate(message.get("tool_calls") or []):
+        function = call.get("function") or {}
+        name = function.get("name")
+        if not name:
+            continue
+        arguments = function.get("arguments")
+        parsed.append(
+            ToolCall(
+                id=f"call_{index}",
+                name=name,
+                arguments=arguments if isinstance(arguments, dict) else {},
+            )
+        )
+    return parsed
 
 
 def normalize_base_url(raw: str) -> str:
@@ -84,13 +110,19 @@ class OllamaBackend(Backend):
                 f"Impossible de lister les modeles sur {self.base_url} ({exc})."
             ) from exc
 
+    def tool_result_message(self, call: ToolCall, output: str) -> dict[str, Any]:
+        # L'API native n'a pas de tool_call_id : l'appariement est positionnel.
+        # `tool_name` aide les modeles recents a recoller resultat et appel.
+        return {"role": "tool", "tool_name": call.name, "content": output}
+
     async def chat(
         self,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         options: dict[str, Any] | None = None,
         fmt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
         payload: dict[str, Any] = {
             "model": model,
@@ -99,7 +131,9 @@ class OllamaBackend(Backend):
             "keep_alive": "10m",
             "options": options or {},
         }
-        if fmt:
+        if tools:
+            payload["tools"] = tools
+        elif fmt:
             payload["format"] = fmt
 
         try:
@@ -117,9 +151,13 @@ class OllamaBackend(Backend):
             )
         response.raise_for_status()
         data = response.json()
+        message = data.get("message") or {}
+        calls = _parse_tool_calls(message)
 
         return ChatResult(
-            content=(data.get("message") or {}).get("content", "").strip(),
+            content=content_or_reasoning(message, bool(calls)),
+            tool_calls=calls,
+            raw_message=message,
             model=data.get("model", model),
             backend=self.name,
             total_duration_s=data.get("total_duration", 0) / 1e9,

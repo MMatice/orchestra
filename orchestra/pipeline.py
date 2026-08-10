@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .registry import AgentRun, Orchestra
+from .workspace import Workspace
 
 VALIDATION_MARKER = "VALIDATED"
 
@@ -41,9 +42,17 @@ class PipelineResult:
             parts.append(f"**Etape {index} - `{run.agent}` ({run.model})**")
             parts.append("")
             parts.append(run.content)
-            parts.append("")
-            parts.append(f"`{run.stats}`")
-            parts.append("")
+            if run.trace:
+                parts += ["", run.trace]
+            parts += ["", f"`{run.stats}`", ""]
+
+        touched = sorted({path for run in self.runs for path in run.changed})
+        if touched:
+            parts += [
+                "**Fichiers modifies sur l'ensemble du pipeline** : "
+                + ", ".join(f"`{p}`" for p in touched),
+                "",
+            ]
         if self.stopped_early:
             parts.append(f"_Arret anticipe : {self.stop_reason}_")
         return "\n".join(parts)
@@ -67,7 +76,11 @@ def parse_steps(raw_steps: list[dict]) -> list[PipelineStep]:
 
 
 async def run_pipeline(
-    orchestra: Orchestra, steps: list[PipelineStep], initial_input: str
+    orchestra: Orchestra,
+    steps: list[PipelineStep],
+    initial_input: str,
+    *,
+    workspace: Workspace | None = None,
 ) -> PipelineResult:
     result = PipelineResult()
     previous_output: str | None = None
@@ -87,6 +100,7 @@ async def run_pipeline(
             step.agent,
             prompt,
             context="\n\n".join(context_parts) or None,
+            workspace=workspace,
         )
         result.runs.append(run)
         previous_output = run.content
@@ -102,25 +116,53 @@ async def run_refine_loop(
     task: str,
     *,
     max_rounds: int = 2,
+    workspace: Workspace | None = None,
 ) -> PipelineResult:
     """Producteur -> critique -> correction, jusqu'a `max_rounds` tours.
 
     Le critique doit terminer sa reponse par VALIDATED quand plus rien n'est
     bloquant ; c'est ce qui permet de sortir de la boucle sans bruler un tour
     de generation supplementaire.
+
+    Avec un espace de travail, la boucle change de nature : le producteur
+    ecrit sur le disque et le critique relit les fichiers reels au lieu d'un
+    extrait recopie. Les deux agents voient donc le meme etat, et le travail
+    n'a plus besoin de transiter par le contexte a chaque tour.
     """
     result = PipelineResult()
+    on_disk = workspace is not None
 
-    draft_run = await orchestra.run(producer, task)
+    draft_run = await orchestra.run(producer, task, workspace=workspace)
     result.runs.append(draft_run)
     draft = draft_run.content
 
     for _ in range(max_rounds):
+        if on_disk:
+            review_prompt = (
+                "Relis le travail decrit ci-dessous en ouvrant toi-meme les "
+                "fichiers concernes dans l'espace de travail. Liste d'abord ce "
+                "qui est bloquant. Si rien ne l'est, termine ta reponse par "
+                f"{VALIDATION_MARKER}."
+            )
+            review_context = (
+                f"Tache d'origine :\n{task}\n\n"
+                f"Compte rendu du producteur :\n{draft}"
+            )
+            if draft_run.changed:
+                review_context += "\n\nFichiers touches : " + ", ".join(
+                    draft_run.changed
+                )
+        else:
+            review_prompt = (
+                "Review the work below. List blocking issues first. "
+                f"If nothing is blocking, end your answer with {VALIDATION_MARKER}."
+            )
+            review_context = (
+                f"Tache d'origine :\n{task}\n\nTravail a reviewer :\n{draft}"
+            )
+
         review_run = await orchestra.run(
-            critic,
-            "Review the work below. List blocking issues first. "
-            f"If nothing is blocking, end your answer with {VALIDATION_MARKER}.",
-            context=f"Tache d'origine :\n{task}\n\nTravail a reviewer :\n{draft}",
+            critic, review_prompt, context=review_context, workspace=workspace
         )
         result.runs.append(review_run)
 
@@ -129,17 +171,31 @@ async def run_refine_loop(
             result.stop_reason = "le critique a valide la production"
             break
 
-        fix_run = await orchestra.run(
-            producer,
-            "Apply the review feedback. Return the corrected work in full, "
-            "not a diff or a summary of changes.",
-            context=(
+        if on_disk:
+            fix_prompt = (
+                "Applique les corrections demandees directement dans les "
+                "fichiers, avec tes outils. Conclus par ce que tu as change."
+            )
+            fix_context = (
+                f"Tache d'origine :\n{task}\n\n"
+                f"Retour du reviewer :\n{review_run.content}"
+            )
+        else:
+            fix_prompt = (
+                "Apply the review feedback. Return the corrected work in full, "
+                "not a diff or a summary of changes."
+            )
+            fix_context = (
                 f"Tache d'origine :\n{task}\n\n"
                 f"Version actuelle :\n{draft}\n\n"
                 f"Retour du reviewer :\n{review_run.content}"
-            ),
+            )
+
+        fix_run = await orchestra.run(
+            producer, fix_prompt, context=fix_context, workspace=workspace
         )
         result.runs.append(fix_run)
+        draft_run = fix_run
         draft = fix_run.content
 
     result.final_output = draft

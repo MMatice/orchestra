@@ -11,6 +11,7 @@ laquelle on peut placer n'importe quel fournisseur.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
@@ -23,7 +24,39 @@ from .base import (
     Backend,
     BackendUnavailable,
     ChatResult,
+    ToolCall,
+    content_or_reasoning,
 )
+
+
+def _parse_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
+    """Extrait les appels d'outils d'un message OpenAI.
+
+    Les arguments arrivent en JSON serialise dans une chaine. Un modele qui
+    produit du JSON casse est un cas courant, pas une exception : on remonte
+    alors un dictionnaire vide et l'outil se plaindra d'arguments manquants,
+    ce qui redonne la main au modele.
+    """
+    parsed: list[ToolCall] = []
+    for index, call in enumerate(message.get("tool_calls") or []):
+        function = call.get("function") or {}
+        name = function.get("name")
+        if not name:
+            continue
+        raw = function.get("arguments")
+        if isinstance(raw, dict):
+            arguments = raw
+        else:
+            try:
+                arguments = json.loads(raw or "{}")
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        parsed.append(
+            ToolCall(id=str(call.get("id") or f"call_{index}"), name=name, arguments=arguments)
+        )
+    return parsed
 
 
 class OpenAICompatBackend(Backend):
@@ -121,10 +154,11 @@ class OpenAICompatBackend(Backend):
     async def chat(
         self,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         options: dict[str, Any] | None = None,
         fmt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
         options = options or {}
         payload: dict[str, Any] = {
@@ -140,7 +174,12 @@ class OpenAICompatBackend(Backend):
             payload["top_p"] = options["top_p"]
         if options.get("num_predict"):
             payload["max_tokens"] = options["num_predict"]
-        if fmt == "json":
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        elif fmt == "json":
+            # Exclusif : contraindre la sortie a un objet JSON empeche le
+            # modele d'emettre des appels d'outils.
             payload["response_format"] = {"type": "json_object"}
 
         started = time.perf_counter()
@@ -164,13 +203,14 @@ class OpenAICompatBackend(Backend):
         elapsed = time.perf_counter() - started
         data = response.json()
         choices = data.get("choices") or []
-        content = ""
-        if choices:
-            content = (choices[0].get("message") or {}).get("content") or ""
+        message = (choices[0].get("message") or {}) if choices else {}
+        calls = _parse_tool_calls(message)
         usage = data.get("usage") or {}
 
         return ChatResult(
-            content=content.strip(),
+            content=content_or_reasoning(message, bool(calls)),
+            tool_calls=calls,
+            raw_message=message,
             model=data.get("model", model),
             backend=self.name,
             total_duration_s=elapsed,

@@ -173,3 +173,248 @@ def test_base_url_is_mandatory():
 def test_local_backend_can_pull_remote_cannot():
     assert OllamaBackend().supports_pull is True
     assert OpenAICompatBackend("gw", "http://x/v1").supports_pull is False
+
+
+# ---------------------------------------------------------- appels d'outils
+#
+# Les deux fournisseurs decrivent la meme intention dans des formes
+# differentes. La boucle d'execution ne doit voir que des `ToolCall`.
+
+
+@pytest.mark.asyncio
+async def test_openai_tool_calls_are_parsed(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "m",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_abc",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read_file",
+                                        # Cote OpenAI, les arguments sont une
+                                        # chaine JSON, pas un objet.
+                                        "arguments": '{"path": "src/app.py"}',
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    result = await backend.chat("m", [], tools=schemas)
+
+    assert captured["body"]["tools"] == schemas
+    assert captured["body"]["tool_choice"] == "auto"
+    assert len(result.tool_calls) == 1
+    call = result.tool_calls[0]
+    assert (call.id, call.name, call.arguments) == (
+        "call_abc",
+        "read_file",
+        {"path": "src/app.py"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_tools_and_json_format_are_mutually_exclusive(monkeypatch):
+    """Contraindre la sortie en JSON empeche le modele d'appeler un outil."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    await backend.chat("m", [], fmt="json", tools=[{"type": "function"}])
+    assert "response_format" not in captured["body"]
+    assert "tools" in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_tool_arguments_do_not_crash(monkeypatch):
+    """Du JSON casse dans les arguments est courant : l'outil se plaindra."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{path: broken",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    result = await backend.chat("m", [], tools=[{"type": "function"}])
+    assert result.tool_calls[0].arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_ollama_tool_calls_are_parsed(monkeypatch):
+    """Cote Ollama les arguments arrivent deja desserialises, sans identifiant."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen3:8b",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "write_file",
+                                "arguments": {"path": "x.py", "content": "a"},
+                            }
+                        }
+                    ],
+                },
+            },
+        )
+
+    backend = OllamaBackend(base_url="http://127.0.0.1:11434")
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **kw: original(*a, **{**kw, "transport": transport}),
+    )
+
+    result = await backend.chat("qwen3:8b", [], tools=[{"type": "function"}])
+
+    call = result.tool_calls[0]
+    assert call.name == "write_file"
+    assert call.arguments == {"path": "x.py", "content": "a"}
+    assert call.id  # fabrique, pour que la boucle reste identique partout
+
+
+# ------------------------------------------------- modeles a raisonnement
+#
+# Constate en conditions reelles sur deepseek-v4-flash via OpenRouter : un
+# tour terminal peut deposer 6000 caracteres d'analyse dans `reasoning` et
+# laisser `content` vide. Sans repli, la generation entiere est perdue.
+
+
+@pytest.mark.parametrize("key", ["reasoning", "reasoning_content", "thinking"])
+@pytest.mark.asyncio
+async def test_empty_content_falls_back_to_reasoning(monkeypatch, key):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": None, key: "  la revue complete  "}}
+                ]
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    result = await backend.chat("m", [])
+    assert result.content == "la revue complete"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_never_masks_a_real_answer(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "la reponse", "reasoning": "brouillon"}}
+                ]
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    assert (await backend.chat("m", [])).content == "la reponse"
+
+
+@pytest.mark.asyncio
+async def test_no_fallback_when_the_model_asks_for_a_tool(monkeypatch):
+    """Un content vide accompagne d'un appel d'outil est normal, pas une perte.
+
+    Injecter le raisonnement ici polluerait l'historique avec du brouillon.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning": "je vais lire le fichier",
+                            "tool_calls": [
+                                {
+                                    "id": "c1",
+                                    "function": {"name": "read_file", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    result = await backend.chat("m", [], tools=[{"type": "function"}])
+    assert result.content == ""
+    assert result.tool_calls[0].name == "read_file"
+
+
+def test_tool_result_message_matches_each_provider():
+    from orchestra.backends import ToolCall
+
+    call = ToolCall(id="c1", name="read_file", arguments={})
+
+    openai_msg = OpenAICompatBackend("gw", "http://x/v1").tool_result_message(call, "sortie")
+    assert openai_msg == {"role": "tool", "tool_call_id": "c1", "content": "sortie"}
+
+    # L'API native n'a pas de tool_call_id : l'appariement est positionnel.
+    ollama_msg = OllamaBackend().tool_result_message(call, "sortie")
+    assert ollama_msg == {"role": "tool", "tool_name": "read_file", "content": "sortie"}

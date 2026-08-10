@@ -8,6 +8,10 @@ keywords: [resume, resumer, condense, synthese, logs, diff, sortie, output, trac
 temperature: 0.1
 num_predict: 900
 
+# Lecture seule : le role est de filtrer, jamais d'agir sur ce qu'il lit.
+tools: [list_files, read_file, search_files]
+max_turns: 6
+
 system: |
   You compress large inputs into a dense digest that another model will read
   instead of the original. Fidelity matters more than brevity.

@@ -2,11 +2,17 @@
 
   python -m orchestra.cli status
   python -m orchestra.cli agents
-  python -m orchestra.cli ask reviewer "Relis ce code" --file mon_module.py
+  python -m orchestra.cli tools
+  python -m orchestra.cli ask reviewer "Relis le module de parsing" --workspace .
+  python -m orchestra.cli ask implementer "Ajoute la gestion des offsets" \
+      --workspace ./mon-projet --write
   python -m orchestra.cli delegate "explique cette fonction" --task explain --file x.py
-  python -m orchestra.cli pipeline steps.json --input-file spec.md
-  python -m orchestra.cli refine "Ecris une fonction de parsing d'ISO-8601"
+  python -m orchestra.cli pipeline steps.json --workspace . --write
+  python -m orchestra.cli refine "Ecris un parseur ISO-8601" --workspace . --write
   python -m orchestra.cli pull
+
+Sans --workspace, les agents n'ont aucun outil et se contentent de produire
+du texte. Sans --write, ils lisent mais ne modifient rien.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,12 +29,40 @@ from .backends import load_backend_config
 from .console import force_utf8_output
 from .pipeline import parse_steps, run_pipeline, run_refine_loop
 from .registry import Orchestra
+from .tools import describe_catalogue
+from .workspace import Workspace
 
 
 def _read(path: str | None) -> str | None:
     if not path:
         return None
     return Path(path).read_text(encoding="utf-8")
+
+
+def _workspace(args: argparse.Namespace) -> Workspace | None:
+    """Ouvre l'espace de travail demande par la ligne de commande.
+
+    `--write` sans `--workspace` est une erreur de l'utilisateur, pas un
+    defaut a corriger silencieusement : autoriser l'ecriture quelque part
+    sans avoir dit ou est precisement ce qu'il ne faut pas deviner.
+    """
+    root = getattr(args, "workspace", None)
+    writable = bool(getattr(args, "write", False))
+    if writable and not root and not os.environ.get("ORCHESTRA_WORKSPACE", "").strip():
+        raise ValueError("--write exige --workspace : precise le repertoire cible.")
+    return Workspace.open(root, writable=writable)
+
+
+def _add_workspace_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workspace",
+        help="repertoire racine sur lequel les agents peuvent agir",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="autorise la modification de fichiers dans --workspace",
+    )
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -82,21 +117,37 @@ async def _run(args: argparse.Namespace) -> int:
                 return 1
         return 0
 
+    if args.command == "tools":
+        print(describe_catalogue())
+        return 0
+
+    workspace = _workspace(args)
+
     if args.command == "ask":
-        run = await orch.run(args.agent, args.prompt, context=_read(args.file))
+        run = await orch.run(
+            args.agent,
+            args.prompt,
+            context=_read(args.file),
+            workspace=workspace,
+        )
         print(run.as_markdown())
         return 0
 
     if args.command == "delegate":
         run = await orch.delegate(
-            args.prompt, task_type=args.task, context=_read(args.file)
+            args.prompt,
+            task_type=args.task,
+            context=_read(args.file),
+            workspace=workspace,
         )
         print(run.as_markdown())
         return 0
 
     if args.command == "pipeline":
         steps = parse_steps(json.loads(Path(args.steps_file).read_text(encoding="utf-8")))
-        result = await run_pipeline(orch, steps, _read(args.input_file) or "")
+        result = await run_pipeline(
+            orch, steps, _read(args.input_file) or "", workspace=workspace
+        )
         print(result.as_markdown())
         return 0
 
@@ -107,6 +158,7 @@ async def _run(args: argparse.Namespace) -> int:
             args.critic,
             args.task,
             max_rounds=args.rounds,
+            workspace=workspace,
         )
         print(result.as_markdown())
         return 0
@@ -122,26 +174,31 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("agents", help="liste compacte des agents")
     sub.add_parser("backends", help="backends configures et backend actif")
     sub.add_parser("pull", help="telecharge les modeles requis (backend local)")
+    sub.add_parser("tools", help="catalogue des outils accessibles aux agents")
 
     p_ask = sub.add_parser("ask", help="appelle un agent precis")
     p_ask.add_argument("agent")
     p_ask.add_argument("prompt")
     p_ask.add_argument("--file", help="fichier joint comme contexte")
+    _add_workspace_flags(p_ask)
 
     p_del = sub.add_parser("delegate", help="laisse le routeur choisir l'agent")
     p_del.add_argument("prompt")
     p_del.add_argument("--task", default=None, help="indice de routage")
     p_del.add_argument("--file", help="fichier joint comme contexte")
+    _add_workspace_flags(p_del)
 
     p_pipe = sub.add_parser("pipeline", help="enchaine des agents depuis un JSON")
     p_pipe.add_argument("steps_file")
     p_pipe.add_argument("--input-file", help="entree initiale")
+    _add_workspace_flags(p_pipe)
 
     p_ref = sub.add_parser("refine", help="boucle producteur/critique")
     p_ref.add_argument("task")
     p_ref.add_argument("--producer", default="implementer")
     p_ref.add_argument("--critic", default="reviewer")
     p_ref.add_argument("--rounds", type=int, default=2)
+    _add_workspace_flags(p_ref)
 
     return parser
 

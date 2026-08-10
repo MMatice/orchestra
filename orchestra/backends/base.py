@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # Une generation peut etre longue : gros prompt, modele froid, file d'attente
@@ -17,6 +17,15 @@ class BackendUnavailable(RuntimeError):
 
 
 @dataclass
+class ToolCall:
+    """Demande d'appel d'outil emise par le modele."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
 class ChatResult:
     content: str
     model: str
@@ -26,6 +35,11 @@ class ChatResult:
     eval_duration_s: float = 0.0
     eval_count: int = 0
     prompt_eval_count: int = 0
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    #: message d'origine, renvoye tel quel dans l'historique. Chaque
+    #: fournisseur accepte sa propre representation : la reconstruire a la
+    #: main ferait perdre les champs qui lui sont propres.
+    raw_message: dict[str, Any] = field(default_factory=dict)
 
     def stats_line(self) -> str:
         parts = [f"{self.backend}:{self.model}"]
@@ -43,6 +57,33 @@ class ChatResult:
             parts.append(f"chargement {self.load_duration_s:.1f}s")
 
         return " | ".join(parts)
+
+
+# Champs ou les modeles a raisonnement deposent leur reflexion, par ordre de
+# specificite : `reasoning_content` (DeepSeek natif, vLLM), `reasoning`
+# (OpenRouter), `thinking` (Ollama).
+REASONING_KEYS = ("reasoning_content", "reasoning", "thinking")
+
+
+def content_or_reasoning(message: dict[str, Any], has_tool_calls: bool) -> str:
+    """Contenu du message, avec repli sur le raisonnement s'il est vide.
+
+    Un modele a raisonnement peut conclure sans rien ecrire dans `content` :
+    toute sa reponse reste alors dans le champ de reflexion. Sans ce repli,
+    un tour de generation complet - et facture - est purement perdu.
+
+    Le repli ne s'applique qu'a un tour terminal : quand le modele demande un
+    outil, un `content` vide est le comportement normal et non une perte.
+    """
+    content = (message.get("content") or "").strip()
+    if content or has_tool_calls:
+        return content
+
+    for key in REASONING_KEYS:
+        fallback = message.get(key)
+        if isinstance(fallback, str) and fallback.strip():
+            return fallback.strip()
+    return ""
 
 
 class Backend(abc.ABC):
@@ -72,12 +113,26 @@ class Backend(abc.ABC):
     async def chat(
         self,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         options: dict[str, Any] | None = None,
         fmt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
-        """Une generation. `fmt="json"` contraint la sortie a un objet JSON."""
+        """Une generation.
+
+        `fmt="json"` contraint la sortie a un objet JSON. `tools` publie les
+        outils appelables ; le modele peut alors repondre par des `tool_calls`
+        au lieu d'un contenu textuel.
+        """
+
+    def tool_result_message(self, call: ToolCall, output: str) -> dict[str, Any]:
+        """Message rendant le resultat d'un outil au modele.
+
+        Forme OpenAI par defaut, la plus repandue. Ollama attend une variante,
+        d'ou la surcharge cote backend natif.
+        """
+        return {"role": "tool", "tool_call_id": call.id, "content": output}
 
     def describe(self) -> str:
         return f"{self.name} ({type(self).__name__}) → {self.base_url}"

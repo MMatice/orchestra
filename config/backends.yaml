@@ -81,9 +81,9 @@ backends:
     api_key_env: OPENROUTER_API_KEY
     num_ctx: 32768
     models:
-      fast: qwen/qwen3-8b
-      code: qwen/qwen3-coder
-      reason: qwen/qwen3-30b-a3b
+      fast: deepseek/deepseek-v4-flash-0731
+      code: deepseek/deepseek-v4-flash-0731
+      reason: deepseek/deepseek-v4-flash-0731
 
   groq:
     type: openai
