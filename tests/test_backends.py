@@ -407,6 +407,86 @@ async def test_no_fallback_when_the_model_asks_for_a_tool(monkeypatch):
     assert result.tool_calls[0].name == "read_file"
 
 
+# -------------------------------------------------- plafond de sortie
+#
+# C'est la seule limite qu'Orchestra applique reellement a un endpoint
+# distant : num_ctx n'est pas envoye, la fenetre appartient au deploiement.
+
+
+@pytest.mark.asyncio
+async def test_openrouter_style_max_output_is_discovered(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "autre/modele", "top_provider": {"max_completion_tokens": 999}},
+                    {
+                        "id": "deepseek/deepseek-v4-flash-0731",
+                        "context_length": 1_000_000,
+                        "top_provider": {"max_completion_tokens": 64000},
+                    },
+                ]
+            },
+        )
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    found = await backend.discover_max_output("deepseek/deepseek-v4-flash-0731")
+    assert found == 64000
+
+    # Memorise : une passerelle ne doit pas etre interrogee a chaque agent.
+    await backend.discover_max_output("deepseek/deepseek-v4-flash-0731")
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_catalogue_without_metadata_returns_nothing(monkeypatch):
+    """vLLM, TGI et la plupart des passerelles ne publient qu'un identifiant."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "mon-modele"}]})
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    assert await backend.discover_max_output("mon-modele") is None
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_never_blocks_an_agent(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    backend, factory = _mock_backend(handler)
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    assert await backend.discover_max_output("m") is None
+
+
+def test_auto_max_output_is_read_from_config(monkeypatch):
+    monkeypatch.setenv("ORCHESTRA_BACKEND", "openrouter")
+    monkeypatch.delenv("ORCHESTRA_BASE_URL", raising=False)
+    backend, _ = create_backend()
+    assert backend.discovers_max_output is True
+    assert backend.max_output_cap is None
+
+    monkeypatch.setenv("ORCHESTRA_BACKEND", "litellm")
+    backend, _ = create_backend()
+    assert backend.discovers_max_output is False
+    assert backend.max_output_cap == 8192
+
+
+def test_remote_context_is_flagged_as_not_enforced():
+    """Ne pas presenter comme une limite une valeur jamais envoyee."""
+    assert OpenAICompatBackend("gw", "http://x/v1").context_is_remote is True
+    assert OllamaBackend().context_is_remote is False
+
+
 def test_tool_result_message_matches_each_provider():
     from orchestra.backends import ToolCall
 

@@ -6,7 +6,7 @@ tasks: [document, documentation, docstring, readme, comment]
 keywords: [documente, documenter, docstring, readme, doc, commente, commentaire, api]
 
 temperature: 0.25
-num_predict: 2000
+num_predict: 6000
 
 tools: [list_files, read_file, search_files, write_file, edit_file]
 max_turns: 12

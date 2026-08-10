@@ -6,7 +6,7 @@ tasks: [review, revue, critique, lint, audit]
 keywords: [review, revue, relis, relire, critique, bug, smell, qualite, "code review", refactor]
 
 temperature: 0.1
-num_predict: 1800
+num_predict: 5000
 
 # Lecture seule, deliberement : un critique qui peut reecrire le code cesse
 # d'etre un contre-pouvoir dans la boucle producteur/critique.

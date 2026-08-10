@@ -59,7 +59,27 @@ def _parse_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
     return parsed
 
 
+def _read_max_output(payload: dict[str, Any], model: str) -> int | None:
+    """Cherche le plafond de sortie du modele dans un catalogue /v1/models."""
+    for entry in payload.get("data") or []:
+        if entry.get("id") != model:
+            continue
+        candidates = [
+            (entry.get("top_provider") or {}).get("max_completion_tokens"),
+            entry.get("max_completion_tokens"),
+            entry.get("max_output_tokens"),
+        ]
+        for value in candidates:
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
+    return None
+
+
 class OpenAICompatBackend(Backend):
+    # La fenetre appartient au deploiement distant : ce client ne l'impose pas.
+    context_is_remote = True
+
     def __init__(
         self,
         name: str,
@@ -68,6 +88,7 @@ class OpenAICompatBackend(Backend):
         api_key_env: str | None = None,
         model_overrides: dict[str, str] | None = None,
         num_ctx_cap: int | None = None,
+        max_output_cap: int | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.name = name
@@ -75,8 +96,10 @@ class OpenAICompatBackend(Backend):
         self.api_key_env = api_key_env
         self.model_overrides = model_overrides
         self.num_ctx_cap = num_ctx_cap
+        self.max_output_cap = max_output_cap
         self.extra_headers = extra_headers or {}
         self._timeout = httpx.Timeout(READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
+        self._max_output_cache: dict[str, int | None] = {}
 
         if not self.base_url:
             raise BackendUnavailable(
@@ -133,6 +156,36 @@ class OpenAICompatBackend(Backend):
             raise self._fail(response)
         count = len(response.json().get("data", []))
         return f"OpenAI-compatible, {count} modele(s) publie(s)"
+
+    async def discover_max_output(self, model: str) -> int | None:
+        """Lit le plafond de sortie annonce par l'endpoint pour ce modele.
+
+        OpenRouter publie `top_provider.max_completion_tokens` ; d'autres
+        services exposent `max_completion_tokens` ou `max_output_tokens` a la
+        racine. vLLM, TGI et la plupart des passerelles internes ne publient
+        qu'un identifiant : on retourne alors None, et la configuration decide.
+
+        Le resultat est memorise, y compris l'absence de reponse : cette
+        interrogation ne doit pas se repeter a chaque appel d'agent.
+        """
+        if model in self._max_output_cache:
+            return self._max_output_cache[model]
+
+        found: int | None = None
+        try:
+            async with httpx.AsyncClient(timeout=CONNECT_TIMEOUT_S) as client:
+                response = await client.get(
+                    f"{self.base_url}/models", headers=self._headers()
+                )
+            if response.status_code < 400:
+                found = _read_max_output(response.json(), model)
+        except Exception:  # noqa: BLE001
+            # Une decouverte est un confort : son echec ne doit jamais
+            # empecher un agent de tourner.
+            found = None
+
+        self._max_output_cache[model] = found
+        return found
 
     async def list_models(self) -> list[str]:
         try:

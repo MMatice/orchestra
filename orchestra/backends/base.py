@@ -96,10 +96,30 @@ class Backend(abc.ABC):
     #: surcharge classe -> modele ; prend le pas sur le profil materiel, car la
     #: capacite d'une passerelle distante n'a rien a voir avec celle du poste
     model_overrides: dict[str, str] | None = None
-    #: plafond de contexte impose par le backend, si connu
+    #: plafond de contexte impose par le backend, si connu. N'a d'effet que
+    #: sur un backend local : une passerelle distante impose sa propre fenetre,
+    #: que le client ne peut ni lire ni contraindre depuis l'exterieur.
     num_ctx_cap: int | None = None
+    #: plafond de tokens generes par appel, si le backend en declare un
+    max_output_cap: int | None = None
+    #: `max_output: auto` en configuration : interroger l'endpoint
+    discovers_max_output: bool = False
+    #: la fenetre de contexte est-elle une propriete du deploiement distant ?
+    #: Si oui, num_ctx_cap ne decrit rien d'applicable et ne doit pas etre
+    #: presente comme une limite effective.
+    context_is_remote: bool = False
     #: seul un backend local sait telecharger ses modeles
     supports_pull: bool = False
+
+    async def discover_max_output(self, model: str) -> int | None:
+        """Plafond de sortie annonce par l'endpoint pour ce modele, si connu.
+
+        Retourne None quand le service ne publie pas l'information, ce qui est
+        le cas de la plupart des passerelles : elles exposent un catalogue
+        reduit a des identifiants. La configuration reste donc la source
+        principale, la decouverte n'etant qu'un confort la ou elle existe.
+        """
+        return None
 
     @abc.abstractmethod
     async def ping(self) -> str:

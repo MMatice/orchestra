@@ -31,9 +31,17 @@ _orchestra: Orchestra | None = None
 
 
 def get_orchestra() -> Orchestra:
+    """Instance partagee, avec relecture des agents modifies depuis le disque.
+
+    Le backend et le profil restent figes au demarrage : ils dependent de
+    l'environnement, pas d'un fichier qu'on ajuste en cours de session. Les
+    agents, eux, se retouchent constamment.
+    """
     global _orchestra
     if _orchestra is None:
         _orchestra = Orchestra.bootstrap()
+    else:
+        _orchestra.reload_agents_if_changed()
     return _orchestra
 
 
@@ -53,7 +61,7 @@ async def orchestra_status() -> str:
     try:
         orch = get_orchestra()
         return (
-            f"{orch.describe()}\n\n"
+            f"{await orch.describe_async()}\n\n"
             f"### Outils\n\n{describe_catalogue()}\n\n"
             f"### Etat\n\n{await orch.health()}"
         )

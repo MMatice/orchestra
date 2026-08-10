@@ -6,7 +6,7 @@ tasks: [test, tests, unittest, pytest, coverage]
 keywords: [test, tests, unitaire, pytest, unittest, jest, vitest, couverture, mock, fixture]
 
 temperature: 0.1
-num_predict: 2500
+num_predict: 8000
 
 # run_command reste inerte tant que ORCHESTRA_ALLOW_SHELL n'est pas positionne.
 # Une fois deverrouille, l'agent execute la suite qu'il vient d'ecrire et

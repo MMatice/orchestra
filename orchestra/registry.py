@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .agent_loop import run_agent_loop
 from .backends import Backend, BackendUnavailable, create_backend
-from .config import AgentSpec, load_agents
+from .config import AgentSpec, agents_fingerprint, load_agents
 from .env import load_dotenv
 from .hardware import Hardware
 from .profiles import Profile, select_profile
@@ -75,6 +75,9 @@ class Orchestra:
         self.profile_reason = profile_reason
         self.backend = backend
         self.backend_reason = backend_reason
+        self.agents_dir: Path | None = None
+        self._agents_stamp: tuple = ()
+        self._discovered_output: dict[str, int | None] = {}
 
     @classmethod
     def bootstrap(cls, agents_dir: Path | None = None) -> "Orchestra":
@@ -82,7 +85,7 @@ class Orchestra:
         load_dotenv()
         backend, backend_reason = create_backend()
         profile, hardware, profile_reason = select_profile()
-        return cls(
+        instance = cls(
             load_agents(agents_dir),
             profile,
             hardware,
@@ -90,6 +93,35 @@ class Orchestra:
             backend,
             backend_reason,
         )
+        instance.agents_dir = agents_dir
+        instance._agents_stamp = agents_fingerprint(agents_dir)
+        return instance
+
+    def reload_agents_if_changed(self) -> list[str]:
+        """Recharge les agents dont le YAML a bouge. Retourne les noms touches.
+
+        Editer un agent doit prendre effet sans redemarrer le serveur MCP :
+        regler un prompt ou un plafond est une boucle qu'on parcourt souvent,
+        et devoir reconnecter a chaque essai fait perdre le fil.
+
+        Un YAML devenu invalide n'ecrase pas la configuration en memoire : on
+        conserve la derniere version qui chargeait, et l'erreur remonte.
+        """
+        stamp = agents_fingerprint(self.agents_dir)
+        if stamp == self._agents_stamp:
+            return []
+
+        previous = self.agents
+        self.agents = load_agents(self.agents_dir)
+        self._agents_stamp = stamp
+        self._discovered_output.clear()
+
+        changed = [
+            name
+            for name, spec in self.agents.items()
+            if name not in previous or previous[name] != spec
+        ]
+        return changed + [n for n in previous if n not in self.agents]
 
     # ------------------------------------------------------------------ infos
 
@@ -113,10 +145,37 @@ class Orchestra:
     def model_for(self, spec: AgentSpec) -> str:
         return spec.resolve_model(self.profile, self.backend.model_overrides)
 
-    def options_for(self, spec: AgentSpec) -> dict:
-        return spec.resolve_options(self.profile, self.backend.num_ctx_cap)
+    async def max_output_for(self, model: str) -> int | None:
+        """Plafond de sortie applicable, decouvert puis memorise si demande."""
+        if not self.backend.discovers_max_output:
+            return self.backend.max_output_cap
+        if model not in self._discovered_output:
+            self._discovered_output[model] = await self.backend.discover_max_output(
+                model
+            )
+        return self._discovered_output[model] or self.backend.max_output_cap
 
-    def describe(self) -> str:
+    async def options_for(self, spec: AgentSpec, model: str | None = None) -> dict:
+        model = model or self.model_for(spec)
+        return spec.resolve_options(
+            self.profile,
+            self.backend.num_ctx_cap,
+            await self.max_output_for(model),
+        )
+
+    async def describe_async(self) -> str:
+        """Inventaire, avec les plafonds reellement appliques.
+
+        Separe de `describe()` parce que le plafond de sortie peut demander
+        une interrogation de l'endpoint quand il est en `auto`.
+        """
+        budgets = {}
+        for spec in self.agents.values():
+            cap = await self.max_output_for(self.model_for(spec))
+            budgets[spec.name] = min(spec.num_predict, cap or self.profile.max_output)
+        return self.describe(budgets)
+
+    def describe(self, output_budgets: dict[str, int] | None = None) -> str:
         lines = [
             "## Orchestra",
             "",
@@ -136,11 +195,21 @@ class Orchestra:
                 f"{self.profile_reason}"
             )
 
-        cap = self.backend.num_ctx_cap or self.profile.num_ctx
+        # Ne jamais annoncer comme limite une valeur qui n'est appliquee nulle
+        # part : sur une passerelle, la fenetre appartient au deploiement et
+        # Orchestra ne l'envoie pas.
+        if self.backend.context_is_remote:
+            lines.append(
+                "- Contexte : impose par le deploiement distant, Orchestra ne "
+                "le contraint pas"
+            )
+        else:
+            cap = self.backend.num_ctx_cap or self.profile.num_ctx
+            lines.append(f"- Contexte max : {cap} tokens")
+
         lines += [
-            f"- Contexte max : {cap} tokens",
             "",
-            "| Agent | Classe | Modele resolu | Acces | Outils | Role |",
+            "| Agent | Classe | Modele resolu | Acces | Sortie max | Outils |",
             "|---|---|---|---|---|---|",
         ]
         for spec in self.agents.values():
@@ -150,10 +219,18 @@ class Orchestra:
                 access = "**ecriture**"
             else:
                 access = "lecture"
+
+            if output_budgets is None:
+                budget = f"{spec.num_predict} demandes"
+            else:
+                effective = output_budgets[spec.name]
+                budget = str(effective)
+                if effective < spec.num_predict:
+                    budget += f" (plafonne, {spec.num_predict} demandes)"
+
             lines.append(
                 f"| `{spec.name}` | {spec.model_class} | `{self.model_for(spec)}` | "
-                f"{access} | {', '.join(spec.tools) or '-'} | "
-                f"{spec.description or spec.label} |"
+                f"{access} | {budget} | {', '.join(spec.tools) or '-'} |"
             )
 
         lines += [
@@ -248,7 +325,7 @@ class Orchestra:
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ]
-        options = self.options_for(spec)
+        options = await self.options_for(spec, model)
 
         if toolset is None:
             # Agent de generation pure, ou outils inutilisables faute d'espace
@@ -312,7 +389,7 @@ class Orchestra:
                             ),
                         },
                     ],
-                    options=self.options_for(triage),
+                    options=await self.options_for(triage),
                     fmt="json",
                 )
                 parsed = parse_triage_response(result.content, candidates)

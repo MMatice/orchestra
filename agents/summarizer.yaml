@@ -6,7 +6,7 @@ tasks: [summarize, resume, condense, digest, logs]
 keywords: [resume, resumer, condense, synthese, logs, diff, sortie, output, trace]
 
 temperature: 0.1
-num_predict: 900
+num_predict: 1200
 
 # Lecture seule : le role est de filtrer, jamais d'agir sur ce qu'il lit.
 tools: [list_files, read_file, search_files]

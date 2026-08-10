@@ -6,7 +6,7 @@ tasks: [explain, explication, understand, walkthrough, error]
 keywords: [explique, expliquer, comprendre, fonctionnement, pourquoi, comment, signifie, erreur, traceback, stacktrace]
 
 temperature: 0.3
-num_predict: 1600
+num_predict: 4000
 
 tools: [list_files, read_file, search_files]
 max_turns: 10

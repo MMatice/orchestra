@@ -6,7 +6,7 @@ tasks: [implement, implementation, code, write, boilerplate, scaffold, fix]
 keywords: [implemente, implementer, ecris, ecrire, code, fonction, classe, script, genere, boilerplate, corrige]
 
 temperature: 0.15
-num_predict: 3000
+num_predict: 12000
 
 tools: [list_files, read_file, search_files, write_file, edit_file]
 max_turns: 14

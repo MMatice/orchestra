@@ -87,12 +87,19 @@ def create_backend(
         models = {str(k): str(v) for k, v in models.items()}
     num_ctx = int(spec["num_ctx"]) if spec.get("num_ctx") else None
 
+    # `max_output: auto` delegue le plafond a ce que l'endpoint annonce ;
+    # une valeur numerique le fixe. Absent, c'est le profil qui tranche.
+    raw_output = spec.get("max_output")
+    auto_output = str(raw_output).strip().lower() == "auto"
+    max_output = None if auto_output or raw_output is None else int(raw_output)
+
     if kind == "ollama":
         backend: Backend = OllamaBackend(
             name=name,
             base_url=base_url,
             model_overrides=models,
             num_ctx_cap=num_ctx,
+            max_output_cap=max_output,
         )
     else:
         headers = spec.get("extra_headers") or {}
@@ -102,7 +109,10 @@ def create_backend(
             api_key_env=spec.get("api_key_env") or None,
             model_overrides=models,
             num_ctx_cap=num_ctx,
+            max_output_cap=max_output,
             extra_headers={str(k): str(v) for k, v in headers.items()},
         )
+
+    backend.discovers_max_output = auto_output
 
     return backend, reason

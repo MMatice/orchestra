@@ -80,11 +80,13 @@ class OllamaBackend(Backend):
         *,
         model_overrides: dict[str, str] | None = None,
         num_ctx_cap: int | None = None,
+        max_output_cap: int | None = None,
     ) -> None:
         self.name = name
         self.base_url = normalize_base_url(base_url or DEFAULT_BASE_URL)
         self.model_overrides = model_overrides
         self.num_ctx_cap = num_ctx_cap
+        self.max_output_cap = max_output_cap
         self._timeout = httpx.Timeout(READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
 
     async def ping(self) -> str:

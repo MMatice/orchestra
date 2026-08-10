@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)](https://modelcontextprotocol.io/)
 [![Infrastructure](https://img.shields.io/badge/infrastructure-tout%20endpoint%20OpenAI--compatible-2088FF)](#infrastructure)
-[![Tests](https://img.shields.io/badge/tests-119%20passed-3FB950)](#tests)
+[![Tests](https://img.shields.io/badge/tests-127%20passed-3FB950)](#tests)
 [![License](https://img.shields.io/badge/license-MIT-3FB950)](LICENSE)
 
 [English](README.md) · **Français**
@@ -382,12 +382,34 @@ system: |
 | `tools` | Outils accordés. Absent = agent textuel, un seul aller-retour |
 | `max_turns` | Budget de tours de la boucle outillée, plafonné à 25 |
 | `temperature` | 0.0-0.15 pour du code, 0.25-0.35 pour de la prose |
-| `num_ctx` | Optionnel, plafonné par le backend ou le profil |
+| `num_predict` | Plafond de sortie par appel, ambition rabotée par le déploiement |
+| `num_ctx` | Optionnel, plafonné par le backend ou le profil. Backends locaux uniquement |
 | `pinned_model` | Optionnel, épingle un modèle et court-circuite la résolution |
 | `output_format` | `json` pour contraindre la sortie, incompatible avec `tools` |
 
 Ajouter un agent revient à déposer un YAML dans `agents/`. Rien d'autre à
-modifier, sur n'importe quel backend.
+modifier, sur n'importe quel backend. En modifier un prend effet à l'appel
+suivant : le serveur MCP voit que le fichier a bougé et le relit, donc régler
+un prompt ou un plafond ne demande pas de se reconnecter.
+
+**`num_predict` est une ambition, pas une constante.** Il est plafonné comme
+`num_ctx` l'est déjà : par le `max_output` du backend s'il en déclare un, sinon
+par le profil matériel. Le même `implementer` qui réclame 12000 tokens les
+obtient derrière une passerelle capable, et se voit ramené à 2048 sur un petit
+modèle local, où une longue génération coûte surtout de l'attente.
+`orchestra_status` affiche le budget effectif et signale ceux qui ont été
+rabotés.
+
+Mettez `max_output: auto` sur un backend pour lire le plafond que l'endpoint
+annonce au lieu de le deviner. OpenRouter le publie par modèle ; vLLM, TGI et la
+plupart des passerelles internes ne publient qu'un identifiant, donnez-leur donc
+un nombre.
+
+> [!IMPORTANT]
+> `num_ctx` n'est **jamais envoyé** à un endpoint OpenAI-compatible : la fenêtre
+> de contexte est une propriété du déploiement distant, pas un choix du client.
+> Elle ne s'applique qu'à un backend Ollama local. Le plafond de sortie est la
+> seule limite qu'Orchestra impose réellement à une passerelle.
 
 ### Outils et privilèges
 

@@ -9,6 +9,7 @@ PROFILE = Profile(
     min_usable_gb=0,
     num_ctx=8192,
     models={"fast": "small:1b", "code": "coder:7b", "reason": "general:8b"},
+    max_output=2048,
 )
 
 
@@ -36,6 +37,27 @@ def test_model_class_resolves_through_profile():
 def test_pinned_model_wins_over_profile():
     spec = _spec(pinned_model="deepseek-coder-v2:16b")
     assert spec.resolve_model(PROFILE) == "deepseek-coder-v2:16b"
+
+
+def test_output_budget_is_capped_by_the_deployment():
+    """num_predict est une ambition de role, pas une constante.
+
+    Sans plafond, un agent regle pour une passerelle capable tronque ses
+    reponses des qu'il tourne sur un petit modele local, et inversement un
+    agent regle pour le local gaspille la capacite d'une passerelle.
+    """
+    spec = _spec(num_predict=12000)
+    # Profil local : ramene a la raison.
+    assert spec.resolve_options(PROFILE)["num_predict"] == 2048
+    # Passerelle capable : l'agent obtient ce qu'il demande.
+    assert spec.resolve_options(PROFILE, None, 32000)["num_predict"] == 12000
+    # Un agent sobre n'est jamais gonfle au plafond disponible.
+    assert _spec(num_predict=800).resolve_options(PROFILE, None, 32000)["num_predict"] == 800
+
+
+def test_backend_output_cap_overrides_the_profile():
+    spec = _spec(num_predict=9000)
+    assert spec.resolve_options(PROFILE, None, 4096)["num_predict"] == 4096
 
 
 def test_agent_cannot_exceed_profile_context():
@@ -107,6 +129,34 @@ def test_shipped_implementer_can_write():
     agents = load_agents()
     assert agents["implementer"].writes
     assert "edit_file" in agents["implementer"].tools
+
+
+def test_editing_a_yaml_takes_effect_without_a_restart(tmp_path):
+    """Un agent edite doit s'appliquer sans reconnecter le serveur MCP.
+
+    Sans cela le fichier sur disque dit une chose et le serveur en applique
+    une autre, ce qui se diagnostique tres mal : on croit que le reglage n'a
+    pas d'effet, pas qu'il n'a pas ete lu.
+    """
+    import time
+
+    from orchestra.config import agents_fingerprint
+
+    agent = tmp_path / "demo.yaml"
+    agent.write_text(
+        "name: demo\nmodel_class: code\nnum_predict: 1000\nsystem: fais des choses\n",
+        encoding="utf-8",
+    )
+    before = agents_fingerprint(tmp_path)
+    assert load_agents(tmp_path)["demo"].num_predict == 1000
+
+    time.sleep(0.01)
+    agent.write_text(
+        "name: demo\nmodel_class: code\nnum_predict: 9000\nsystem: fais des choses\n",
+        encoding="utf-8",
+    )
+    assert agents_fingerprint(tmp_path) != before
+    assert load_agents(tmp_path)["demo"].num_predict == 9000
 
 
 def test_triage_stays_a_pure_json_classifier():

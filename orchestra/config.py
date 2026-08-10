@@ -81,16 +81,30 @@ class AgentSpec:
         return profile.model_for(self.model_class)
 
     def resolve_options(
-        self, profile: Profile, num_ctx_cap: int | None = None
+        self,
+        profile: Profile,
+        num_ctx_cap: int | None = None,
+        max_output_cap: int | None = None,
     ) -> dict[str, Any]:
-        # Le plafond vient du backend quand il en impose un, sinon du profil
-        # materiel. Un agent peut demander moins (plus rapide), jamais plus.
-        cap = num_ctx_cap or profile.num_ctx
+        """Parametres d'inference effectifs pour cet agent.
+
+        Contexte et sortie suivent la meme regle : le plafond vient du backend
+        quand il en impose un, sinon du profil materiel, et un agent peut
+        demander moins, jamais plus.
+
+        `num_predict` est donc une ambition de role, pas une constante. Un
+        implementer qui reclame de quoi ecrire un fichier entier obtient ce
+        qu'il demande derriere une passerelle capable, et se voit ramene a la
+        raison sur un petit modele local, ou une longue generation coute
+        surtout du temps d'attente.
+        """
+        ctx_cap = num_ctx_cap or profile.num_ctx
+        out_cap = max_output_cap or profile.max_output
         return {
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "num_predict": self.num_predict,
-            "num_ctx": min(self.num_ctx or cap, cap),
+            "num_predict": min(self.num_predict, out_cap),
+            "num_ctx": min(self.num_ctx or ctx_cap, ctx_cap),
         }
 
     @classmethod
@@ -148,6 +162,26 @@ class AgentSpec:
             ),
             source_path=source,
         )
+
+
+def agents_fingerprint(directory: Path | None = None) -> tuple:
+    """Empreinte du dossier d'agents : noms et dates de modification.
+
+    Permet de detecter qu'un YAML a change sans relire ni reparser les
+    fichiers. Sans cela, editer un agent reste sans effet jusqu'au
+    redemarrage du serveur MCP, ce qui est le genre de piege qu'on ne voit
+    pas venir : le fichier sur disque dit une chose, le serveur en applique
+    une autre.
+    """
+    directory = directory or AGENTS_DIR
+    if not directory.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            (path.name, path.stat().st_mtime_ns)
+            for path in [*directory.glob("*.yaml"), *directory.glob("*.yml")]
+        )
+    )
 
 
 def load_agents(directory: Path | None = None) -> dict[str, AgentSpec]:

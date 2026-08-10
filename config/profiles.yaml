@@ -13,6 +13,10 @@
 #   code   -> implementation, review, tests. Modele specialise code.
 #   reason -> explication, documentation, architecture. Modele generaliste.
 #
+# max_output plafonne les tokens generes par appel. Un agent peut demander
+# moins, jamais plus. Sur un petit modele local, une longue generation coute
+# surtout du temps d'attente : le plafond est la pour ca, pas pour la memoire.
+#
 # CONTRAINTE SUR num_ctx : la valeur s'applique aux trois classes, elle ne doit
 # donc jamais depasser la plus petite fenetre de contexte des trois modeles.
 # Les fenetres different beaucoup d'un modele a l'autre : qwen2.5-coder plafonne
@@ -27,6 +31,7 @@ profiles:
     label: "CPU seul"
     min_usable_gb: 0
     num_ctx: 4096
+    max_output: 1024
     models:
       fast: "qwen3:0.6b"              # 523 Mo
       code: "qwen2.5-coder:1.5b"      # 986 Mo
@@ -36,6 +41,7 @@ profiles:
     label: "GPU d'entree (4-6 Go)"
     min_usable_gb: 3.5
     num_ctx: 8192
+    max_output: 1536
     models:
       fast: "qwen3:0.6b"              # 523 Mo
       code: "qwen2.5-coder:3b"        # 1.9 Go
@@ -45,6 +51,7 @@ profiles:
     label: "GPU grand public (8-11 Go)"
     min_usable_gb: 6.5
     num_ctx: 8192
+    max_output: 2048
     models:
       fast: "qwen3:1.7b"              # 1.4 Go
       code: "qwen2.5-coder:7b"        # 4.7 Go
@@ -54,6 +61,7 @@ profiles:
     label: "GPU haut de gamme (12-20 Go)"
     min_usable_gb: 11.0
     num_ctx: 16384
+    max_output: 3072
     models:
       fast: "qwen3:1.7b"              # 1.4 Go
       code: "qwen2.5-coder:14b"       # 9.0 Go
@@ -63,6 +71,7 @@ profiles:
     label: "Station de travail / GPU pro (24-40 Go)"
     min_usable_gb: 21.0
     num_ctx: 32768
+    max_output: 4096
     models:
       fast: "qwen3:4b"                # 2.5 Go
       code: "qwen3-coder:30b"         # 19 Go, MoE 30B-A3B
@@ -77,6 +86,7 @@ profiles:
     # residents simultanement et d'allouer un cache KV bien plus large : c'est
     # le contexte qui change, pas la taille des poids.
     num_ctx: 131072
+    max_output: 8192
     models:
       fast: "qwen3:4b"                # 2.5 Go
       code: "qwen3-coder:30b"         # 19 Go
@@ -86,6 +96,7 @@ profiles:
     label: "GPU datacenter (80 Go et plus)"
     min_usable_gb: 70.0
     num_ctx: 131072
+    max_output: 8192
     models:
       fast: "qwen3:4b"                # 2.5 Go
       code: "qwen3-coder:30b"         # 19 Go

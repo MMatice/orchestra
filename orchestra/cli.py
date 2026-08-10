@@ -69,7 +69,7 @@ async def _run(args: argparse.Namespace) -> int:
     orch = Orchestra.bootstrap()
 
     if args.command == "status":
-        print(orch.describe())
+        print(await orch.describe_async())
         print()
         print(await orch.health())
         return 0

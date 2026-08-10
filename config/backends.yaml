@@ -15,6 +15,14 @@
 # la variable d'environnement qui la porte via `api_key_env` ; elle est relue a
 # chaque appel et n'est jamais journalisee.
 #
+# Cle `max_output` : plafond de tokens generes par appel. C'est la seule
+# limite qu'Orchestra applique reellement a un endpoint distant : `num_ctx`
+# n'est PAS envoye cote OpenAI-compatible, la fenetre etant une propriete du
+# deploiement. Un agent peut demander moins que ce plafond, jamais plus.
+# La valeur `auto` interroge /v1/models pour lire ce que l'endpoint annonce,
+# ce que publient OpenRouter et quelques autres ; ailleurs on retombe sur le
+# profil materiel, donc fixez un nombre.
+#
 # Cle `models` : surcharge la resolution classe -> modele du profil materiel.
 # Indispensable des que le backend est distant, car la capacite d'un endpoint
 # n'a aucun rapport avec celle du poste qui l'appelle. Les noms doivent
@@ -37,6 +45,7 @@ backends:
     base_url: http://litellm.interne:4000/v1
     api_key_env: LITELLM_API_KEY
     num_ctx: 32768
+    max_output: 8192
     models:
       fast: qwen3-1.7b
       code: qwen3-coder-30b
@@ -49,6 +58,7 @@ backends:
     base_url: http://vllm.interne:8000/v1
     api_key_env: VLLM_API_KEY
     num_ctx: 32768
+    max_output: 8192
     models:
       fast: Qwen/Qwen3-1.7B
       code: Qwen/Qwen3-Coder-30B-A3B-Instruct
@@ -62,6 +72,7 @@ backends:
     base_url: http://tgi.interne:8080/v1
     api_key_env: TGI_API_KEY
     num_ctx: 32768
+    max_output: 4096
 
   # Azure OpenAI ou tout proxy interne exposant le contrat OpenAI. Les noms de
   # modeles sont ceux de vos deploiements, pas ceux du fournisseur.
@@ -70,6 +81,7 @@ backends:
     base_url: https://votre-ressource.openai.azure.com/openai/v1
     api_key_env: AZURE_OPENAI_API_KEY
     num_ctx: 32768
+    max_output: 16384
 
   # --- Fournisseurs heberges ------------------------------------------------
   # Utiles pour absorber un pic sans dimensionner le parc pour le pire cas.
@@ -80,6 +92,10 @@ backends:
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
     num_ctx: 32768
+    # OpenRouter publie top_provider.max_completion_tokens par modele :
+    # laisser l'endpoint decider evite de deviner, et suit un changement
+    # de modele sans retoucher ce fichier.
+    max_output: auto
     models:
       fast: deepseek/deepseek-v4-flash-0731
       code: deepseek/deepseek-v4-flash-0731
@@ -90,6 +106,7 @@ backends:
     base_url: https://api.groq.com/openai/v1
     api_key_env: GROQ_API_KEY
     num_ctx: 32768
+    max_output: 8192
     models:
       fast: llama-3.1-8b-instant
       code: qwen/qwen3-32b
@@ -100,6 +117,7 @@ backends:
     base_url: https://api.together.xyz/v1
     api_key_env: TOGETHER_API_KEY
     num_ctx: 32768
+    max_output: 8192
     models:
       fast: Qwen/Qwen3-1.7B
       code: Qwen/Qwen3-Coder-480B-A35B-Instruct
@@ -116,6 +134,7 @@ backends:
   lmstudio:
     type: openai
     base_url: http://127.0.0.1:1234/v1
+    max_output: 4096
 
   llamacpp:
     type: openai

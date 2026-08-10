@@ -27,6 +27,10 @@ class Profile:
     min_usable_gb: float
     num_ctx: int
     models: dict[str, str]
+    #: plafond de tokens generes par appel. Un petit modele local met une
+    #: eternite a produire une longue reponse : le plafond protege le temps
+    #: d'attente autant que la memoire.
+    max_output: int = 2048
 
     def model_for(self, model_class: str) -> str:
         try:
@@ -63,6 +67,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             min_usable_gb=float(data.get("min_usable_gb", 0)),
             num_ctx=int(data.get("num_ctx", 8192)),
             models={k: str(v) for k, v in models.items()},
+            max_output=int(data.get("max_output", 2048)),
         )
     return profiles
 

@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-6E56CF)](https://modelcontextprotocol.io/)
 [![Infrastructure](https://img.shields.io/badge/infrastructure-any%20OpenAI--compatible%20endpoint-2088FF)](#infrastructure)
-[![Tests](https://img.shields.io/badge/tests-119%20passed-3FB950)](#tests)
+[![Tests](https://img.shields.io/badge/tests-127%20passed-3FB950)](#tests)
 [![License](https://img.shields.io/badge/license-MIT-3FB950)](LICENSE)
 
 **English** · [Français](README.fr.md)
@@ -372,12 +372,32 @@ system: |
 | `tools` | Tools granted. Absent means a text-only agent, one round trip |
 | `max_turns` | Turn budget for the tool loop, capped at 25 |
 | `temperature` | 0.0-0.15 for code, 0.25-0.35 for prose |
-| `num_ctx` | Optional, capped by the backend or the profile |
+| `num_predict` | Output ceiling per call, an ambition capped by the deployment |
+| `num_ctx` | Optional, capped by the backend or the profile. Local backends only |
 | `pinned_model` | Optional, pins a specific model and bypasses resolution |
 | `output_format` | `json` to constrain the output, incompatible with `tools` |
 
 Adding an agent means dropping a YAML file into `agents/`. Nothing else changes,
-on any backend.
+on any backend. Editing one takes effect on the next call: the MCP server
+notices the file changed and reloads it, so tuning a prompt or a ceiling does
+not mean reconnecting.
+
+**`num_predict` is an ambition, not a constant.** It is capped the same way
+`num_ctx` is, by the backend's `max_output` if it declares one and by the
+hardware profile otherwise. The same `implementer` asking for 12000 tokens gets
+them behind a capable gateway and is brought back to 2048 on a small local
+model, where a long generation costs mostly waiting. `orchestra_status` reports
+the effective budget and flags the ones that were capped.
+
+Set `max_output: auto` on a backend to read the ceiling the endpoint advertises
+instead of guessing it. OpenRouter publishes it per model; vLLM, TGI and most
+internal gateways publish only an identifier, so give them a number.
+
+> [!IMPORTANT]
+> `num_ctx` is **never sent** to an OpenAI-compatible endpoint: the context
+> window is a property of the remote deployment, not something a client
+> chooses. It only applies to a local Ollama backend. The output ceiling is the
+> one limit Orchestra actually enforces on a gateway.
 
 ### Tools and permissions
 
